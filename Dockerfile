@@ -34,15 +34,16 @@ COPY requirements.txt .
 # Install the Python dependencies.
 RUN pip install --no-cache-dir -r requirements.txt
 
-# --- ADD THIS LINE TO FIX MODULE NOT FOUND ERROR ---
-# Add the /app directory to Python's import path
+# Add the /app directory to Python's import path so modules like lncrawl can be found
 ENV PYTHONPATH=/app
 
 # Copy the rest of your application code into the container.
 COPY . .
+
 # Expose the port that the web service will listen on (Render provides this via $PORT).
+# Note: Render ignores this EXPOSE line for web services, but it's good practice.
 EXPOSE 8080
 
 # The command to run your web service (Gunicorn) which will also start the bot logic.
-# Use the shell form of CMD to allow environment variable expansion for $PORT.
+# Render uses the Procfile for web services, but this CMD is a fallback/local standard.
 CMD gunicorn --bind "0.0.0.0:$PORT" --workers 1 --threads 8 --timeout 0 telegram_bot:server_app
