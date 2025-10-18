@@ -3,13 +3,15 @@ import logging
 import time
 import requests
 import asyncio
-import uvicorn
 from threading import Thread
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+# Import necessary lncrawl components directly
 from lncrawl.core.app import App
+from lncrawl.core.sources import SITES # Import SITES to find the correct crawler class
+
 from pymongo import MongoClient, errors
 
 # --- Configuration ---
@@ -25,7 +27,8 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-flask_app = Flask(__name__)
+# Rename Flask app to avoid conflict if needed, though 'app' is standard for gunicorn
+server_app = Flask(__name__) # Use server_app for Flask
 
 # --- Database Connection ---
 try:
@@ -39,11 +42,11 @@ except errors.ConnectionFailure as e:
     exit(1)
 
 # --- Web Service Endpoint ---
-@flask_app.route('/')
+@server_app.route('/') # Use server_app
 def index():
     return "Bot is running."
 
-@flask_app.route('/health')
+@server_app.route('/health') # Use server_app
 def health_check():
     return "OK", 200
 
@@ -60,24 +63,32 @@ def self_ping():
 
 # --- Core Bot Logic (Runs in a separate thread) ---
 def crawl_and_send_sync(context: ContextTypes.DEFAULT_TYPE):
-    """Synchronous function to perform the crawl, calling async functions via the event loop."""
+    """Synchronous wrapper to run the async crawl process in a thread."""
+    loop = context.application.loop
+    asyncio.run_coroutine_threadsafe(crawl_and_send(context), loop)
+
+async def crawl_and_send(context: ContextTypes.DEFAULT_TYPE):
     bot_data = context.application.bot_data
-    loop = context.application.loop # Get the bot's running event loop
     bot_data['crawling'] = True
     bot_data['status'] = 'Initializing crawl...'
     logger.info("Starting a new crawl cycle...")
 
     try:
-        app = App()
-        crawler = app.get_crawler(WEBSITE)
-        if not crawler:
-            logger.error("Could not find a crawler for the website.")
-            bot_data['status'] = 'Error: Crawler not found.'
-            asyncio.run_coroutine_threadsafe(context.bot.send_message(BOT_OWNER, "Error: Crawler not found."), loop)
+        # Correctly get the crawler instance
+        app = App() # Main App instance for session/helpers
+        crawler_cls = SITES.get_crawler(WEBSITE)
+        if not crawler_cls:
+            logger.error("Could not find a crawler class for the website.")
+            bot_data['status'] = 'Error: Crawler class not found.'
+            await context.bot.send_message(BOT_OWNER, "Error: Crawler class not found.")
             return
+        
+        # Instantiate crawler for initial page check
+        site_crawler = crawler_cls() 
+        site_crawler.initialize() # Initialize with session etc.
 
         home_url = f"{WEBSITE}list/all/all-newstime-0.html"
-        soup = crawler.get_soup(home_url)
+        soup = site_crawler.get_soup(home_url) # Use the instantiated crawler
         last_page = 0
         page_links = soup.select('.pagination li a[href*="all-newstime-"]')
         if page_links:
@@ -94,29 +105,20 @@ def crawl_and_send_sync(context: ContextTypes.DEFAULT_TYPE):
 
             bot_data['status'] = f"Crawling page {page_num + 1} of {total_pages}..."
             page_url = f"{WEBSITE}list/all/all-newstime-{page_num}.html"
-            page_soup = crawler.get_soup(page_url)
+            page_soup = site_crawler.get_soup(page_url) # Reuse the site crawler
             
             novel_links = page_soup.select('ul.novel-list li.novel-item a')
             
             for novel_link in reversed(novel_links):
                 if not bot_data.get('crawling'):
                     break
-                novel_url = crawler.absolute_url(novel_link['href'])
+                novel_url = site_crawler.absolute_url(novel_link['href'])
                 novel_title = novel_link.select_one('h4.novel-title').text.strip()
                 bot_data['status'] = f"Processing: {novel_title}"
-
-                # Schedule the async processing function onto the bot's event loop
-                future = asyncio.run_coroutine_threadsafe(process_novel(novel_url, novel_title, context), loop)
-                try:
-                    future.result(timeout=300) # Wait up to 5 minutes for processing/sending
-                except TimeoutError:
-                     logger.error(f"Timeout processing novel: {novel_title}")
-                     asyncio.run_coroutine_threadsafe(context.bot.send_message(BOT_OWNER, f"Timeout processing: {novel_title}"), loop)
-                except Exception as e:
-                     logger.error(f"Error getting result from process_novel: {e}")
-                     asyncio.run_coroutine_threadsafe(context.bot.send_message(BOT_OWNER, f"Async error processing: {novel_title}"), loop)
-
-                time.sleep(1) # Polite delay
+                
+                # Process each novel asynchronously
+                await process_novel(novel_url, novel_title, context)
+                await asyncio.sleep(1)
     
     except Exception as e:
         logger.error(f"A critical error occurred during the crawl: {e}", exc_info=True)
@@ -125,17 +127,19 @@ def crawl_and_send_sync(context: ContextTypes.DEFAULT_TYPE):
         bot_data['status'] = 'Idle. Awaiting next command.'
         bot_data['crawling'] = False
         logger.info("Crawl cycle finished.")
-        asyncio.run_coroutine_threadsafe(context.bot.send_message(BOT_OWNER, "Finished crawling all pages."), loop)
+        await context.bot.send_message(BOT_OWNER, "Finished crawling all pages.")
 
-# --- Async Helper Functions (Called via run_coroutine_threadsafe) ---
 async def process_novel(novel_url, novel_title, context: ContextTypes.DEFAULT_TYPE):
     try:
         processed_novel = novels_collection.find_one({"url": novel_url})
         
-        # Create a new App instance specific to this novel processing task
-        # This avoids potential state conflicts if run within the main App instance
+        # Use a new App instance for each novel to encapsulate state
         app = App()
-        app.crawler = app.get_crawler(novel_url)
+        # Explicitly set the novel URL *before* other operations
+        app.novel_url = novel_url
+        
+        # Get the crawler specific to this novel URL
+        app.crawler = app.get_crawler_instance()
         if not app.crawler:
              logger.error(f"Could not get crawler for novel: {novel_url}")
              await context.bot.send_message(BOT_OWNER, f"Error: Could not get crawler for {novel_title}")
@@ -149,7 +153,6 @@ async def process_novel(novel_url, novel_title, context: ContextTypes.DEFAULT_TY
                 context.application.bot_data['status'] = f"Updating: {novel_title}"
                 logger.info(f"'{novel_title}' has an update. Downloading...")
                 if await send_novel(app, novel_url, context, caption="Updated"):
-                    # Use thread-safe operations for DB updates if needed, though pymongo is generally thread-safe
                     novels_collection.update_one(
                         {"url": novel_url},
                         {"$set": {"chapter_count": latest_chapter_count, "status": "updated"}}
@@ -179,6 +182,11 @@ async def send_novel(app, novel_url, context: ContextTypes.DEFAULT_TYPE, caption
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, app.pack_by_url, novel_url, {"epub"})
         
+        # Ensure crawler object exists before accessing output_path
+        if not app.crawler:
+            logger.error(f"Crawler object is None during send_novel for {novel_url}")
+            return False
+
         output_path = app.crawler.output_path
         
         for filename in os.listdir(output_path):
@@ -190,16 +198,16 @@ async def send_novel(app, novel_url, context: ContextTypes.DEFAULT_TYPE, caption
                         chat_id=BOT_OWNER,
                         document=f,
                         caption=f"{caption} {filename}".strip(),
-                        read_timeout=180, # Set read timeout for sending large files
-                        write_timeout=180, # Set write timeout
-                        connect_timeout=60 # Set connection timeout
+                        read_timeout=180, 
+                        write_timeout=180, 
+                        connect_timeout=60
                     )
                 return True
         logger.warning(f"No EPUB file found in {output_path} for {novel_title}")
         return False
     except Exception as e:
-        logger.error(f"Failed to download or send '{app.crawler.novel_title}': {e}", exc_info=True)
-        await context.bot.send_message(BOT_OWNER, f"Error sending '{app.crawler.novel_title}': {e}")
+        logger.error(f"Failed to download or send '{app.crawler.novel_title if app.crawler else novel_url}': {e}", exc_info=True)
+        await context.bot.send_message(BOT_OWNER, f"Error sending '{app.crawler.novel_title if app.crawler else novel_url}': {e}")
         return False
 
 # --- Telegram Command Handlers ---
@@ -208,7 +216,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("A crawl is already in progress. Use /status to check.")
     else:
         await update.message.reply_text("Crawl started. I will process all novels. Use /status to check my progress.")
-        # Start the synchronous crawl function in a separate thread
         thread = Thread(target=crawl_and_send_sync, args=(context,), daemon=True)
         thread.start()
 
@@ -222,31 +229,23 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("I am not currently crawling.")
 
-# --- Main Entry Point ---
+# --- Main Setup and Run ---
+def run_flask():
+    """Runs the Flask app using Gunicorn."""
+    # Gunicorn expects the app callable as module:variable
+    # We don't run it directly here, but configure it for the Procfile/start command
+    pass # Gunicorn will be started by the Procfile or start command
+
 def main():
     if not all([BOT_TOKEN, MONGO_URI, BOT_OWNER, APP_URL]):
         logger.fatal("One or more environment variables are missing (BOT_TOKEN, MONGO_URI, BOT_OWNER, APP_URL).")
         return
 
-    # Start Flask/Uvicorn server in a background thread
-    config = uvicorn.Config(app=flask_app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), log_level="info")
-    server = uvicorn.Server(config)
-    server_thread = Thread(target=server.run, daemon=True)
-    server_thread.start()
-    logger.info("Flask web service started.")
-
-    # Start self-pinging in a background thread
-    ping_thread = Thread(target=self_ping, daemon=True)
-    ping_thread.start()
-    logger.info("Self-pinging keep-alive service started.")
-
     # Create the Telegram Application
     application = Application.builder().token(BOT_TOKEN).build()
 
     # Store the running event loop in the application context
-    # This is needed so the synchronous thread can schedule tasks back onto it
     application.loop = asyncio.get_event_loop()
-
 
     # Initialize bot state
     application.bot_data['status'] = 'Idle. Ready to start.'
@@ -257,9 +256,16 @@ def main():
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("stop", stop_command))
     
-    # Run the bot's main loop (this blocks)
+    # Start self-pinging in a background thread
+    ping_thread = Thread(target=self_ping, daemon=True)
+    ping_thread.start()
+    logger.info("Self-pinging keep-alive service started.")
+
+    # Run the bot's main loop (this blocks the main thread)
     logger.info("Telegram bot is now running...")
     application.run_polling()
 
 if __name__ == "__main__":
-    main() # No asyncio.run needed here, run_polling handles the loop
+    # Start Flask app using gunicorn via Render's start command or Procfile
+    # The main() function now only starts the bot and ping thread.
+    main()
