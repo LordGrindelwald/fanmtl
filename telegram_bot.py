@@ -2,18 +2,21 @@ import os
 import logging
 import time
 import requests
+import asyncio
 from threading import Thread
 from flask import Flask
-from telegram.ext import Updater, CommandHandler
-from pymongo import MongoClient, errors
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+
 from lncrawl.core.app import App
+from pymongo import MongoClient, errors
 
 # --- Configuration ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 BOT_OWNER = int(os.getenv("BOT_OWNER"))
 WEBSITE = "https://fanmtl.com/"
-APP_URL = os.getenv("APP_URL") # Your Render app URL, e.g., https://your-app-name.onrender.com
+APP_URL = os.getenv("APP_URL")
 
 # --- Setup ---
 logging.basicConfig(
@@ -45,7 +48,6 @@ def health_check():
 
 # --- Keep-Alive Feature ---
 def self_ping():
-    """Pings the web service to prevent it from sleeping on free hosting."""
     while True:
         try:
             if APP_URL:
@@ -53,16 +55,11 @@ def self_ping():
                 logger.info("Sent keep-alive ping to self.")
         except Exception as e:
             logger.warning(f"Keep-alive ping failed: {e}")
-        time.sleep(14 * 60) # Ping every 14 minutes
+        time.sleep(14 * 60)
 
 # --- Core Bot Logic ---
-
-def crawl_and_send(context):
-    """
-    Crawls the website from the last page to the first, processing each novel.
-    This function runs in a background thread to keep the bot responsive.
-    """
-    bot_data = context.bot_data
+def crawl_and_send(context: ContextTypes.DEFAULT_TYPE):
+    bot_data = context.application.bot_data
     bot_data['crawling'] = True
     bot_data['status'] = 'Initializing crawl...'
     logger.info("Starting a new crawl cycle...")
@@ -100,7 +97,7 @@ def crawl_and_send(context):
                 novel_title = novel_link.select_one('h4.novel-title').text.strip()
                 bot_data['status'] = f"Processing: {novel_title}"
 
-                process_novel(novel_url, novel_title, app, context)
+                asyncio.run(process_novel(novel_url, novel_title, app, context))
                 time.sleep(1)
     
     except Exception as e:
@@ -110,11 +107,9 @@ def crawl_and_send(context):
         bot_data['status'] = 'Idle. Awaiting next command.'
         bot_data['crawling'] = False
         logger.info("Crawl cycle finished.")
-        context.bot.send_message(BOT_OWNER, "Finished crawling all pages.")
+        asyncio.run(context.bot.send_message(BOT_OWNER, "Finished crawling all pages."))
 
-
-def process_novel(novel_url, novel_title, app, context):
-    """Checks a novel against the database and triggers a download or update if necessary."""
+async def process_novel(novel_url, novel_title, app, context: ContextTypes.DEFAULT_TYPE):
     try:
         processed_novel = novels_collection.find_one({"url": novel_url})
         
@@ -124,17 +119,17 @@ def process_novel(novel_url, novel_title, app, context):
 
         if processed_novel:
             if latest_chapter_count > processed_novel.get("chapter_count", 0):
-                context.bot_data['status'] = f"Updating: {novel_title}"
+                context.application.bot_data['status'] = f"Updating: {novel_title}"
                 logger.info(f"'{novel_title}' has an update. Downloading...")
-                if send_novel(app, novel_url, context, caption="Updated"):
+                if await send_novel(app, novel_url, context, caption="Updated"):
                     novels_collection.update_one(
                         {"url": novel_url},
                         {"$set": {"chapter_count": latest_chapter_count, "status": "updated"}}
                     )
         else:
-            context.bot_data['status'] = f"Downloading new novel: {novel_title}"
+            context.application.bot_data['status'] = f"Downloading new novel: {novel_title}"
             logger.info(f"Found new novel: '{novel_title}'. Downloading...")
-            if send_novel(app, novel_url, context):
+            if await send_novel(app, novel_url, context):
                 novels_collection.insert_one({
                     "url": novel_url,
                     "title": novel_title,
@@ -144,13 +139,10 @@ def process_novel(novel_url, novel_title, app, context):
 
     except Exception as e:
         logger.error(f"Failed to process novel '{novel_title}' ({novel_url}): {e}", exc_info=True)
-        context.bot.send_message(BOT_OWNER, f"Error processing '{novel_title}': {e}")
+        await context.bot.send_message(BOT_OWNER, f"Error processing '{novel_title}': {e}")
 
-
-def send_novel(app, novel_url, context, caption=""):
-    """Downloads a novel as an EPUB and sends it to the bot owner via Telegram."""
+async def send_novel(app, novel_url, context: ContextTypes.DEFAULT_TYPE, caption=""):
     try:
-        # These flags ensure the filename is only the novel title.
         app.pack_as_single_file = True
         app.no_suffix_after_filename = True
 
@@ -162,7 +154,7 @@ def send_novel(app, novel_url, context, caption=""):
                 file_path = os.path.join(output_path, filename)
                 logger.info(f"Sending file: {file_path}")
                 with open(file_path, "rb") as f:
-                    context.bot.send_document(
+                    await context.bot.send_document(
                         chat_id=BOT_OWNER,
                         document=f,
                         caption=f"{caption} {filename}".strip(),
@@ -172,33 +164,31 @@ def send_novel(app, novel_url, context, caption=""):
         return False
     except Exception as e:
         logger.error(f"Failed to download or send '{app.crawler.novel_title}': {e}", exc_info=True)
-        context.bot.send_message(BOT_OWNER, f"Error sending '{app.crawler.novel_title}': {e}")
+        await context.bot.send_message(BOT_OWNER, f"Error sending '{app.crawler.novel_title}': {e}")
         return False
-
 
 # --- Telegram Command Handlers ---
 
-def start_command(update, context):
-    if context.bot_data.get('crawling'):
-        update.message.reply_text("A crawl is already in progress. Use /status to check.")
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.application.bot_data.get('crawling'):
+        await update.message.reply_text("A crawl is already in progress. Use /status to check.")
     else:
-        update.message.reply_text("Crawl started. I will process all novels. Use /status to check my progress.")
+        await update.message.reply_text("Crawl started. I will process all novels. Use /status to check my progress.")
         thread = Thread(target=crawl_and_send, args=(context,))
         thread.daemon = True
         thread.start()
 
-def status_command(update, context):
-    update.message.reply_text(f"**Status:** {context.bot_data.get('status', 'Idle.')}")
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"**Status:** {context.application.bot_data.get('status', 'Idle.')}")
 
-def stop_command(update, context):
-    if context.bot_data.get('crawling'):
-        context.bot_data['crawling'] = False
-        update.message.reply_text("Stopping crawl... I will finish the current novel and then stop.")
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.application.bot_data.get('crawling'):
+        context.application.bot_data['crawling'] = False
+        await update.message.reply_text("Stopping crawl... I will finish the current novel and then stop.")
     else:
-        update.message.reply_text("I am not currently crawling.")
+        await update.message.reply_text("I am not currently crawling.")
 
 def main():
-    """Starts the Flask web server, the self-ping thread, and the Telegram bot."""
     if not all([BOT_TOKEN, MONGO_URI, BOT_OWNER, APP_URL]):
         logger.fatal("One or more environment variables are missing (BOT_TOKEN, MONGO_URI, BOT_OWNER, APP_URL).")
         return
@@ -215,21 +205,21 @@ def main():
     ping_thread.start()
     logger.info("Self-pinging keep-alive service started.")
 
-    # Start Telegram bot
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
+    # Create the Application and pass it your bot's token.
+    application = Application.builder().token(BOT_TOKEN).build()
 
-    dp.bot_data['status'] = 'Idle. Ready to start.'
-    dp.bot_data['crawling'] = False
+    # Initialize bot state.
+    application.bot_data['status'] = 'Idle. Ready to start.'
+    application.bot_data['crawling'] = False
 
-    dp.add_handler(CommandHandler("start", start_command))
-    dp.add_handler(CommandHandler("status", status_command))
-    dp.add_handler(CommandHandler("stop", stop_command))
+    # Register command handlers.
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("stop", stop_command))
 
-    updater.start_polling()
-    logger.info("Telegram bot is now running and listening for commands.")
-    updater.idle()
-
+    # Run the bot until the user presses Ctrl-C
+    logger.info("Telegram bot is now running...")
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
