@@ -42,7 +42,8 @@ try:
     logger.info("Successfully connected to MongoDB.")
 except errors.ConnectionFailure as e:
     logger.fatal(f"Could not connect to MongoDB: {e}")
-    exit(1)
+    # Raise error to stop Gunicorn from trying to run
+    raise RuntimeError(f"Could not connect to MongoDB: {e}")
 
 # --- Web Service Endpoint ---
 @server_app.route('/')
@@ -74,9 +75,14 @@ def crawl_and_send_sync(context: ContextTypes.DEFAULT_TYPE):
         
     loop = telegram_app.loop
     if not loop or not loop.is_running():
-        logger.error("Telegram application loop is not running.")
-        return
-        
+        # If loop is not running, it might be because it's managed by Application
+        # Try getting it from the application again
+        try:
+            loop = context.application.loop
+        except Exception:
+            logger.error("Could not retrieve a running event loop.")
+            return
+
     asyncio.run_coroutine_threadsafe(crawl_and_send(context), loop)
 
 async def crawl_and_send(context: ContextTypes.DEFAULT_TYPE):
@@ -232,47 +238,59 @@ def run_bot_polling(application: Application):
     logger.info("Starting Telegram bot polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-def main():
-    global telegram_app 
+#
+# --- STARTUP LOGIC (MOVED FROM main()) ---
+# This code now runs when Gunicorn imports the file.
+#
 
-    if not all([BOT_TOKEN, MONGO_URI, BOT_OWNER]):
-         logger.fatal("One or more environment variables are missing (BOT_TOKEN, MONGO_URI, BOT_OWNER). Bot cannot start.")
-         return
-    if not APP_URL:
-        logger.warning("APP_URL environment variable is not set. Self-pinging will be disabled.")
+if not all([BOT_TOKEN, MONGO_URI, BOT_OWNER]):
+     logger.fatal("One or more environment variables are missing (BOT_TOKEN, MONGO_URI, BOT_OWNER). Bot cannot start.")
+     raise RuntimeError("Missing essential environment variables.")
 
-    # Create the Telegram Application
-    telegram_app = Application.builder().token(BOT_TOKEN).build()
+if not APP_URL:
+    logger.warning("APP_URL environment variable is not set. Self-pinging will be disabled.")
 
-    # Get the event loop *after* the Application is built
+# Create the Telegram Application
+telegram_app = Application.builder().token(BOT_TOKEN).build()
+
+# Get the event loop *after* the Application is built
+# We must create a new loop for the threads
+try:
     loop = asyncio.get_event_loop()
-    telegram_app.loop = loop
+    if loop.is_running():
+        # If a loop is already running (e.g., in Gunicorn), create a new one
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-    # Initialize bot state
-    telegram_app.bot_data['status'] = 'Idle. Ready to start.'
-    telegram_app.bot_data['crawling'] = False
+telegram_app.loop = loop
 
-    # Register command handlers
-    telegram_app.add_handler(CommandHandler("start", start_command))
-    telegram_app.add_handler(CommandHandler("status", status_command))
-    telegram_app.add_handler(CommandHandler("stop", stop_command))
-    
-    # Start self-pinging in a background thread
-    if APP_URL:
-        ping_thread = Thread(target=self_ping, daemon=True)
-        ping_thread.start()
-        logger.info("Self-pinging keep-alive service started.")
-    else:
-        logger.info("Self-pinging disabled as APP_URL is not set.")
+# Initialize bot state
+telegram_app.bot_data['status'] = 'Idle. Ready to start.'
+telegram_app.bot_data['crawling'] = False
 
-    # Start the bot polling in a separate thread
-    bot_thread = Thread(target=run_bot_polling, args=(telegram_app,), daemon=True)
-    bot_thread.start()
+# Register command handlers
+telegram_app.add_handler(CommandHandler("start", start_command))
+telegram_app.add_handler(CommandHandler("status", status_command))
+telegram_app.add_handler(CommandHandler("stop", stop_command))
 
-    # The Gunicorn command in the Dockerfile will run 'server_app' from this file.
-    # Keep the main thread alive (Gunicorn manages the process lifecycle).
-    while True:
-       time.sleep(60)
+# Start self-pinging in a background thread
+if APP_URL:
+    ping_thread = Thread(target=self_ping, daemon=True)
+    ping_thread.start()
+    logger.info("Self-pinging keep-alive service started.")
+else:
+    logger.info("Self-pinging disabled as APP_URL is not set.")
 
-if __name__ == "__main__":
-    main()
+# Start the bot polling in a separate thread
+bot_thread = Thread(target=run_bot_polling, args=(telegram_app,), daemon=True)
+bot_thread.start()
+
+logger.info("Bot polling and web server are starting up...")
+
+#
+# DO NOT ADD `if __name__ == "__main__":` or `while True:`
+# Gunicorn manages the process and serves `server_app`.
+#
