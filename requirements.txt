@@ -1,0 +1,39 @@
+# app requirements
+typer==0.9.0
+ascii==1.0.0
+regex==2023.10.3
+packaging==23.2
+lxml==5.1.0
+pyease-grpc>=1.6.0
+python-dotenv==1.0.0
+beautifulsoup4==4.12.2
+requests==2.31.0
+requests_toolbelt==1.0.0
+websocket-client==1.7.0
+python-slugify==8.0.1
+colorama==0.4.6
+tqdm==4.66.1
+PyExecJS==1.5.1
+ebooklib==0.18
+pillow==10.1.0
+readability-lxml==0.8.1
+questionary==2.0.1
+prompt-toolkit==3.0.36
+html5lib==1.1
+base58==2.1.1
+python-box==7.1.1
+pycryptodome==3.19.0
+selenium>=3.141.0
+tenacity>=8.2.3
+ecdsa>=0.14
+
+# cloudscraper
+pyparsing >= 3.1.0
+pyOpenSSL >= 24.0.0
+brotli >= 1.1.0
+
+# message bot requirements
+python-telegram-bot[job-queue]~=20.0
+
+# web service requirements
+Flask==3.0.0
