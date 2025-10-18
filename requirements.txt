@@ -37,3 +37,7 @@ python-telegram-bot[job-queue]~=20.0
 
 # web service requirements
 Flask==3.0.0
+
+# Added for Telegram Bot and Database
+pymongo
+python-telegram-bot==13.15
