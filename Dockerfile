@@ -4,7 +4,7 @@ FROM python:3.11-slim
 # Set environment variables to prevent interactive prompts during package installations.
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies
+# Install system dependencies (including Chrome and its deps, excluding Calibre)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     wget \
@@ -21,7 +21,7 @@ RUN apt-get update && \
     libxcb-cursor0 \
     nodejs \
     npm \
-    # --- ADD CHROME DEPENDENCIES ---
+    # --- CHROME DEPENDENCIES ---
     gnupg \
     fonts-liberation \
     libappindicator3-1 \
@@ -56,15 +56,14 @@ RUN apt-get update && \
     libxss1 \
     libxtst6 \
     lsb-release \
-    wget \
     xdg-utils && \
     # --- INSTALL GOOGLE CHROME ---
     wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
-    apt-get install -y ./google-chrome-stable_current_amd64.deb && \
+    apt-get install -y --allow-downgrades ./google-chrome-stable_current_amd64.deb && \
     rm google-chrome-stable_current_amd64.deb && \
-    # --- INSTALL CALIBRE ---
-    wget -nv -O- https://download.calibre-ebook.com/linux-installer.sh | sh /dev/stdin && \
+    # --- REMOVED CALIBRE INSTALLATION ---
     # --- CLEANUP ---
+    apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # Set the working directory inside the container.
@@ -88,9 +87,7 @@ RUN mv /app/sources /app/lncrawl/sources && \
     find /app/lncrawl/sources -type d -exec touch {}/__init__.py \;
 
 # Expose the port that the web service will listen on (Render provides this via $PORT).
-# Note: Render ignores this EXPOSE line for web services, but it's good practice.
 EXPOSE 8080
 
-# The command to run your web service (Gunicorn) which will also start the bot logic.
-# Render uses the Procfile for web services, but this CMD is a fallback/local standard.
+# The command to run your web service (Gunicorn)
 CMD gunicorn --bind "0.0.0.0:$PORT" --workers 1 --threads 8 --timeout 0 telegram_bot:server_app
