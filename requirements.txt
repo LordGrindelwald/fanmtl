@@ -32,9 +32,12 @@ pyparsing >= 3.1.0
 pyOpenSSL >= 24.0.0
 brotli >= 1.1.0
 
+# message bot requirements
+python-telegram-bot==20.8
+
 # web service requirements
 Flask==3.0.0
+uvicorn
 
 # Added for Telegram Bot and Database
 pymongo
-python-telegram-bot==20.8
