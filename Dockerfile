@@ -5,7 +5,7 @@ FROM python:3.11-slim
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies required by the crawler and Calibre.
-# Added libegl1 and libopengl0 to satisfy Calibre's installation requirements.
+# Added libegl1, libopengl0, and libxcb-cursor0 to satisfy Calibre's installation requirements.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     wget \
@@ -17,6 +17,7 @@ RUN apt-get update && \
     libfontconfig1 \
     libegl1 \
     libopengl0 \
+    libxcb-cursor0 \
     nodejs \
     npm && \
     # Download and run the official Calibre installer for Linux.
