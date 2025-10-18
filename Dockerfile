@@ -40,6 +40,11 @@ ENV PYTHONPATH=/app
 # Copy the rest of your application code into the container.
 COPY . .
 
+# FIX: Move 'sources' inside 'lncrawl' to match the import paths
+# and create __init__.py files to make them all importable packages.
+RUN mv /app/sources /app/lncrawl/sources && \
+    find /app/lncrawl/sources -type d -exec touch {}/__init__.py \;
+
 # Expose the port that the web service will listen on (Render provides this via $PORT).
 # Note: Render ignores this EXPOSE line for web services, but it's good practice.
 EXPOSE 8080
