@@ -37,7 +37,7 @@ python-telegram-bot==20.8
 
 # web service requirements
 Flask==3.0.0
-uvicorn
+gunicorn # Replaced uvicorn
 
 # Added for Telegram Bot and Database
 pymongo
