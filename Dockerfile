@@ -1,29 +1,41 @@
-# Use an official Python runtime as a parent image
-FROM python:3.10-slim
+# Use a stable, slim version of Python to avoid dependency issues.
+FROM python:3.11-slim
 
-# Set the working directory in the container
-WORKDIR /home/appuser/app
+# Set environment variables to prevent interactive prompts during package installations.
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Install dependencies, including Calibre
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libpoppler-cpp-dev \
-    pkg-config \
-    python3-dev \
-    libjpeg-dev \
-    libffi-dev \
-    zlib1g-dev \
-    --no-install-recommends && \
-    wget -nv -O- https://download.calibre-ebook.com/linux-installer.sh | sh /dev/stdin
+# Install system dependencies required by the crawler and Calibre.
+# This includes Node.js for potential Cloudflare challenges and the Calibre installer.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    wget \
+    ca-certificates \
+    libxext6 \
+    libxrender1 \
+    libxtst6 \
+    libfreetype6 \
+    libfontconfig1 \
+    nodejs \
+    npm && \
+    # Download and run the official Calibre installer for Linux.
+    wget -nv -O- https://download.calibre-ebook.com/linux-installer.sh | sh /dev/stdin && \
+    # Clean up apt caches to keep the final image size smaller.
+    rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file into the container
+# Set the working directory inside the container.
+WORKDIR /app
+
+# Copy the requirements file first to leverage Docker's layer caching.
 COPY requirements.txt .
 
-# Install any needed packages specified in requirements.txt
+# Install the Python dependencies specified in your requirements file.
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application's code into the container
+# Copy the rest of your application code into the container.
 COPY . .
 
-# Run the web service, which will also start the bot
-CMD ["python3", "web_service.py"]
+# Expose the port that the web service will listen on. Render provides this as a PORT env var.
+EXPOSE 8080
+
+# The command to run your web service and bot when the container starts.
+CMD ["python", "telegram_bot.py"]
