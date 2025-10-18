@@ -21,7 +21,7 @@ if app_path not in sys.path:
 # Import necessary lncrawl components directly
 # This import should now work if '/app' is in sys.path
 from lncrawl.core.app import App # Still needed for packing
-from lncrawl.sources.en.f.fanmtl import FanmtlCrawler # Import specific crawler
+from lncrawl.sources.en.f.fanmtl import FanMTLCrawler # Import specific crawler
 
 from pymongo import MongoClient, errors
 
