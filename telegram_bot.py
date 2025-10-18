@@ -52,7 +52,7 @@ try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     db = client.get_database("novel_bot")
     novels_collection = db.novels
-    client.admin.command('ismaster')
+    client.admin.command('ismaster') # The ismaster command is cheap and does not require auth.
     logger.info("Successfully connected to MongoDB.")
 except errors.ConnectionFailure as e:
     logger.fatal(f"Could not connect to MongoDB: {e}")
@@ -77,7 +77,7 @@ def self_ping():
                 logger.info("Sent keep-alive ping to self.")
         except Exception as e:
             logger.warning(f"Keep-alive ping failed: {e}")
-        time.sleep(14 * 60) # Sleep for 14 minutes
+        time.sleep(14 * 60) # Sleep for 14 minutes (just under Render's 15 min timeout)
 
 # --- Core Bot Logic (Runs in a separate thread) ---
 def crawl_and_send_sync(context: ContextTypes.DEFAULT_TYPE):
@@ -111,8 +111,13 @@ async def crawl_and_send(context: ContextTypes.DEFAULT_TYPE):
         site_crawler = FanMTLCrawler() # Corrected Case
         site_crawler.initialize()
 
-        home_url = f"{WEBSITE}list/all/all-newstime-0.html"
-        soup = site_crawler.get_soup(home_url) # Use the instantiated crawler
+        # Assuming the structure requires iterating through pages listed on the site.
+        # This part might need adjustment based on FanMTLCrawler's actual capabilities
+        # if it has a more direct way to get all novels.
+        home_url = f"{WEBSITE}list/all/all-newstime-0.html" # Example start page
+        soup = site_crawler.get_soup(home_url) # Use the instantiated crawler's method
+
+        # Determine the total number of pages (Example logic, adapt as needed)
         last_page = 0
         page_links = soup.select('.pagination li a[href*="all-newstime-"]')
         if page_links:
@@ -122,20 +127,23 @@ async def crawl_and_send(context: ContextTypes.DEFAULT_TYPE):
         total_pages = last_page + 1
         logger.info(f"Determined there are {total_pages} pages to crawl.")
 
+        # Crawl pages in reverse order (newest first based on URL structure)
         for page_num in range(last_page, -1, -1):
             if not bot_data.get('crawling'):
                 logger.info("Crawl was stopped by user command.")
-                break
+                break # Exit the page loop if crawling is stopped
 
             bot_data['status'] = f"Crawling page {page_num + 1} of {total_pages}..."
             page_url = f"{WEBSITE}list/all/all-newstime-{page_num}.html"
-            page_soup = site_crawler.get_soup(page_url) # Reuse the site crawler
+            page_soup = site_crawler.get_soup(page_url) # Reuse the site crawler instance
 
+            # Find novel links on the current page (Selector might need adjustment)
             novel_links = page_soup.select('ul.novel-list li.novel-item a')
 
+            # Process novels on the current page (in reverse order found on page -> oldest first)
             for novel_link in reversed(novel_links):
                 if not bot_data.get('crawling'):
-                    break
+                    break # Exit the novel loop if crawling is stopped
                 novel_url = site_crawler.absolute_url(novel_link['href'])
                 novel_title_element = novel_link.select_one('h4.novel-title')
                 if novel_title_element:
@@ -144,15 +152,19 @@ async def crawl_and_send(context: ContextTypes.DEFAULT_TYPE):
 
                     # Process each novel asynchronously
                     await process_novel(novel_url, novel_title, context)
-                    await asyncio.sleep(1) # Use asyncio.sleep within async function
+                    await asyncio.sleep(1) # Small delay between novels
                 else:
                     logger.warning(f"Could not find title for link: {novel_link.get('href')}")
+
+            if not bot_data.get('crawling'):
+                break # Ensure exit after checking inner loop break condition
 
 
     except Exception as e:
         logger.error(f"A critical error occurred during the crawl: {e}", exc_info=True)
         bot_data['status'] = f"Crawl failed with an error: {e}"
         if BOT_OWNER:
+             # Use await inside async function
              await context.bot.send_message(BOT_OWNER, f"Crawl failed critically: {e}")
     finally:
         bot_data['status'] = 'Idle. Awaiting next command.'
@@ -169,29 +181,34 @@ async def process_novel(novel_url, novel_title, context: ContextTypes.DEFAULT_TY
         # Instantiate the crawler for this specific novel
         novel_crawler = FanMTLCrawler() # Corrected Case
         novel_crawler.novel_url = novel_url # Set the URL
-        novel_crawler.initialize() # Initialize it
+        novel_crawler.initialize() # Initialize it for this specific novel
 
-        novel_crawler.read_novel_info() # Now read info
+        # This method likely fetches novel metadata and chapter list
+        novel_crawler.read_novel_info()
         latest_chapter_count = len(novel_crawler.chapters)
 
         if processed_novel:
+            # Check if there are new chapters
             if latest_chapter_count > processed_novel.get("chapter_count", 0):
                 context.application.bot_data['status'] = f"Updating: {novel_title}"
-                logger.info(f"'{novel_title}' has an update. Downloading...")
+                logger.info(f"'{novel_title}' has an update ({latest_chapter_count} chapters). Downloading...")
                 # Pass the instantiated novel_crawler to send_novel
                 if await send_novel(novel_crawler, novel_url, context, caption="Updated"):
+                    # Update chapter count only if sending was successful
                     novels_collection.update_one(
                         {"url": novel_url},
                         {"$set": {"chapter_count": latest_chapter_count, "status": "updated"}}
                     )
-            # Optional: Add else block if you want logs/status for non-updated novels
+            # Optional: Log if novel is up-to-date
             # else:
             #     logger.info(f"'{novel_title}' is up to date.")
         else:
+            # Novel is new
             context.application.bot_data['status'] = f"Downloading new novel: {novel_title}"
-            logger.info(f"Found new novel: '{novel_title}'. Downloading...")
+            logger.info(f"Found new novel: '{novel_title}' ({latest_chapter_count} chapters). Downloading...")
             # Pass the instantiated novel_crawler to send_novel
             if await send_novel(novel_crawler, novel_url, context):
+                # Insert record only if sending was successful
                 novels_collection.insert_one({
                     "url": novel_url,
                     "title": novel_title,
@@ -208,56 +225,87 @@ async def send_novel(crawler, novel_url, context: ContextTypes.DEFAULT_TYPE, cap
     # Receives the specific crawler instance for this novel
     global BOT_OWNER # Ensure BOT_OWNER is accessible
     app = None # Initialize app to None
+    output_path = None # Initialize output_path
     try:
         # Use a temporary App instance just for packing, passing the crawler
         app = App()
-        app.crawler = crawler # Assign the already initialized crawler
+        app.crawler = crawler # Assign the already initialized and info-loaded crawler
         app.pack_as_single_file = True
         app.no_suffix_after_filename = True
 
         # Run the potentially long-running synchronous packing task in a separate thread
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, app.pack_epub) # Call pack_epub directly
+        # This assumes app.pack_epub() handles the downloading internally
+        await loop.run_in_executor(None, app.pack_epub)
 
+        # Get the output path *after* packing is done
         output_path = app.crawler.output_path
 
         epub_found = False
-        for filename in os.listdir(output_path):
-            if filename.lower().endswith(".epub"): # Use lower() for case-insensitivity
-                file_path = os.path.join(output_path, filename)
-                logger.info(f"Sending file: {file_path}")
-                if BOT_OWNER:
-                    with open(file_path, "rb") as f:
-                        await context.bot.send_document(
-                            chat_id=BOT_OWNER,
-                            document=f,
-                            caption=f"{caption} {filename}".strip(),
-                            read_timeout=180,
-                            write_timeout=180,
-                            connect_timeout=60
-                        )
-                epub_found = True
-                # Clean up the generated epub after sending
-                try:
-                    os.remove(file_path)
-                    logger.info(f"Removed temporary file: {file_path}")
-                except OSError as rm_err:
-                    logger.warning(f"Could not remove temporary file {file_path}: {rm_err}")
-                break # Send only the first epub found
+        # Check if output_path exists before trying to list its contents
+        if output_path and os.path.isdir(output_path):
+            for filename in os.listdir(output_path):
+                if filename.lower().endswith(".epub"): # Use lower() for case-insensitivity
+                    file_path = os.path.join(output_path, filename)
+                    logger.info(f"Sending file: {file_path}")
+                    if BOT_OWNER:
+                        try:
+                            with open(file_path, "rb") as f:
+                                await context.bot.send_document(
+                                    chat_id=BOT_OWNER,
+                                    document=f,
+                                    caption=f"{caption} {filename}".strip(),
+                                    read_timeout=180,  # Increased timeouts for potentially large files
+                                    write_timeout=180,
+                                    connect_timeout=60
+                                )
+                            logger.info(f"Successfully sent {filename}")
+                            epub_found = True
+                        except Exception as send_err:
+                             logger.error(f"Failed to send document {filename}: {send_err}", exc_info=True)
+                             if BOT_OWNER:
+                                await context.bot.send_message(BOT_OWNER, f"Failed to send {filename}: {send_err}")
+                             # Decide if you want to return False here or try cleaning up anyway
+                             # return False # Uncomment if failure to send means overall failure
 
-        if not epub_found:
-            logger.warning(f"No EPUB file found in {output_path} for novel url {novel_url}")
-            return False
-        return True # Return True only if epub was found and sent (or would be sent if BOT_OWNER)
+                    else:
+                        # If no BOT_OWNER, log that we would have sent it
+                        logger.info(f"BOT_OWNER not set. Would have sent: {filename}")
+                        epub_found = True # Consider it 'found' for logic purposes
+
+                    # Clean up the generated epub *after attempting* to send
+                    if os.path.exists(file_path):
+                        try:
+                            os.remove(file_path)
+                            logger.info(f"Removed temporary file: {file_path}")
+                        except OSError as rm_err:
+                            logger.warning(f"Could not remove temporary file {file_path}: {rm_err}")
+
+                    break # Send only the first epub found for this novel
+            if not epub_found:
+                 logger.warning(f"No EPUB file found in {output_path} for novel url {novel_url}")
+        else:
+             logger.error(f"Output path '{output_path}' not found or is not a directory for novel {novel_url}")
+
+
+        return epub_found # Return True only if epub was found (and sent/logged)
 
     except Exception as e:
-        novel_name = crawler.novel_title if crawler else novel_url
+        novel_name = crawler.novel_title if crawler and hasattr(crawler, 'novel_title') else novel_url
         logger.error(f"Failed to download or send '{novel_name}': {e}", exc_info=True)
         if BOT_OWNER:
             await context.bot.send_message(BOT_OWNER, f"Error sending '{novel_name}': {e}")
         return False
     finally:
-        # Optional: Clean up output directory if needed, be careful not to delete ongoing downloads
+        # Optional: Clean up the entire output directory if it exists,
+        # but be careful if multiple downloads could happen concurrently to the same base path.
+        # This cleanup might be better handled after the entire crawl cycle.
+        # if output_path and os.path.isdir(output_path):
+        #     try:
+        #         shutil.rmtree(output_path)
+        #         logger.info(f"Cleaned up output directory: {output_path}")
+        #     except Exception as clean_err:
+        #         logger.warning(f"Could not clean up output directory {output_path}: {clean_err}")
         pass
 
 
@@ -288,6 +336,7 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
      if context.application.bot_data.get('crawling'):
         context.application.bot_data['crawling'] = False
+        context.application.bot_data['status'] = 'Stopping crawl...' # Update status immediately
         await update.message.reply_text("Stopping crawl... I will finish the current novel and then stop.")
      else:
         await update.message.reply_text("I am not currently crawling.")
@@ -302,15 +351,22 @@ def run_bot_polling(application: Application):
         asyncio.set_event_loop(loop)
         logger.info("Created and set new event loop for bot polling thread.")
         # --- End Fix ---
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+        # --- FIX: Disable PTB's signal handlers in the background thread ---
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            stop_signals=None # <<< ADDED THIS LINE
+        )
+        # --- End Fix ---
+
     except Exception as e:
         logger.critical(f"Bot polling loop failed critically: {e}", exc_info=True)
-        # Depending on deployment, might need os._exit(1) or similar if thread doesn't stop process
-        os._exit(1) # Force exit if polling fails hard
+        # Force exit the entire process if polling fails, Gunicorn should restart it.
+        os._exit(1)
 
 #
-# --- STARTUP LOGIC (MOVED FROM main()) ---
-# This code now runs when Gunicorn imports the file.
+# --- STARTUP LOGIC ---
+# This code runs when Gunicorn imports the file.
 #
 
 if not all([BOT_TOKEN, MONGO_URI, BOT_OWNER_STR]):
@@ -331,10 +387,6 @@ if not APP_URL:
 # Create the Telegram Application
 telegram_app = Application.builder().token(BOT_TOKEN).build()
 
-# --- REMOVED Redundant Loop Handling ---
-# The loop is now created *inside* the run_bot_polling thread.
-# ---
-
 # Initialize bot state
 telegram_app.bot_data['status'] = 'Idle. Ready to start.'
 telegram_app.bot_data['crawling'] = False
@@ -353,13 +405,11 @@ else:
     logger.info("Self-pinging disabled as APP_URL is not set.")
 
 # Start the bot polling in a separate thread
+# Pass the created telegram_app instance to the thread
 bot_thread = Thread(target=run_bot_polling, args=(telegram_app,), daemon=True)
 bot_thread.start()
 
 logger.info("Bot polling thread started. Gunicorn serving Flask app...")
 
-#
-# DO NOT ADD `if __name__ == "__main__":` or `while True:`
-# Gunicorn manages the process and serves `server_app`.
-# The bot polling and pinging run in background threads.
-#
+# Gunicorn manages the main process and serves `server_app`.
+# The bot polling and pinging run in background daemon threads.
