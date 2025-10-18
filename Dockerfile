@@ -21,7 +21,7 @@ RUN apt-get update && \
     libxcb-cursor0 \
     nodejs \
     npm && \
-    wget -nv -O- https://download.calibre-ebook.com/linux-installer.sh |
+    wget -nv -O- https://download.calibre-ebook.com/linux-installer.sh | \
 sh /dev/stdin && \
     rm -rf /var/lib/apt/lists/*
 
