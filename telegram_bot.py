@@ -60,16 +60,22 @@ def self_ping():
 # --- Core Bot Logic ---
 def crawl_and_send(context: ContextTypes.DEFAULT_TYPE):
     bot_data = context.application.bot_data
-    loop = context.application.loop
+    loop = asyncio.get_running_loop()
     bot_data['crawling'] = True
     bot_data['status'] = 'Initializing crawl...'
     logger.info("Starting a new crawl cycle...")
 
     try:
-        app = App() # The App is initialized here. No 'initialize()' method is needed.
+        app = App()
+        # Correctly get a crawler instance for the site
+        crawler = app.get_crawler(WEBSITE)
+        if not crawler:
+            logger.error("Could not find a crawler for the website.")
+            bot_data['status'] = 'Error: Crawler not found.'
+            return
 
         home_url = f"{WEBSITE}list/all/all-newstime-0.html"
-        soup = app.crawler.get_soup(home_url)
+        soup = crawler.get_soup(home_url)
         last_page = 0
         page_links = soup.select('.pagination li a[href*="all-newstime-"]')
         if page_links:
@@ -86,14 +92,14 @@ def crawl_and_send(context: ContextTypes.DEFAULT_TYPE):
 
             bot_data['status'] = f"Crawling page {page_num + 1} of {total_pages}..."
             page_url = f"{WEBSITE}list/all/all-newstime-{page_num}.html"
-            page_soup = app.crawler.get_soup(page_url)
+            page_soup = crawler.get_soup(page_url)
             
             novel_links = page_soup.select('ul.novel-list li.novel-item a')
             
             for novel_link in reversed(novel_links):
                 if not bot_data.get('crawling'):
                     break
-                novel_url = app.crawler.absolute_url(novel_link['href'])
+                novel_url = crawler.absolute_url(novel_link['href'])
                 novel_title = novel_link.select_one('h4.novel-title').text.strip()
                 bot_data['status'] = f"Processing: {novel_title}"
 
@@ -117,15 +123,21 @@ async def process_novel(novel_url, novel_title, app, context: ContextTypes.DEFAU
     try:
         processed_novel = novels_collection.find_one({"url": novel_url})
         
-        app.crawler.novel_url = novel_url
-        app.crawler.read_novel_info()
-        latest_chapter_count = len(app.crawler.chapters)
+        # Use a new App instance for each novel to ensure clean state
+        novel_app = App()
+        novel_app.crawler = novel_app.get_crawler(novel_url)
+        if not novel_app.crawler:
+             logger.error(f"Could not get crawler for novel: {novel_url}")
+             return
+
+        novel_app.crawler.read_novel_info()
+        latest_chapter_count = len(novel_app.crawler.chapters)
 
         if processed_novel:
             if latest_chapter_count > processed_novel.get("chapter_count", 0):
                 context.application.bot_data['status'] = f"Updating: {novel_title}"
                 logger.info(f"'{novel_title}' has an update. Downloading...")
-                if await send_novel(app, novel_url, context, caption="Updated"):
+                if await send_novel(novel_app, novel_url, context, caption="Updated"):
                     novels_collection.update_one(
                         {"url": novel_url},
                         {"$set": {"chapter_count": latest_chapter_count, "status": "updated"}}
@@ -133,7 +145,7 @@ async def process_novel(novel_url, novel_title, app, context: ContextTypes.DEFAU
         else:
             context.application.bot_data['status'] = f"Downloading new novel: {novel_title}"
             logger.info(f"Found new novel: '{novel_title}'. Downloading...")
-            if await send_novel(app, novel_url, context):
+            if await send_novel(novel_app, novel_url, context):
                 novels_collection.insert_one({
                     "url": novel_url,
                     "title": novel_title,
@@ -178,6 +190,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("A crawl is already in progress. Use /status to check.")
     else:
         await update.message.reply_text("Crawl started. I will process all novels. Use /status to check my progress.")
+        # Pass the application context to the thread
         thread = Thread(target=crawl_and_send, args=(context,))
         thread.daemon = True
         thread.start()
@@ -192,27 +205,18 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("I am not currently crawling.")
 
+def run_bot(application):
+    """Function to run the bot's polling loop."""
+    logger.info("Telegram bot is now running...")
+    application.run_polling()
+
 def main():
     if not all([BOT_TOKEN, MONGO_URI, BOT_OWNER, APP_URL]):
         logger.fatal("One or more environment variables are missing (BOT_TOKEN, MONGO_URI, BOT_OWNER, APP_URL).")
         return
 
-    # Start Flask server in a background thread
-    flask_thread = Thread(target=lambda: flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080))))
-    flask_thread.daemon = True
-    flask_thread.start()
-    logger.info("Flask web service started.")
-
-    # Start self-pinging in a background thread
-    ping_thread = Thread(target=self_ping)
-    ping_thread.daemon = True
-    ping_thread.start()
-    logger.info("Self-pinging keep-alive service started.")
-
-    # Create the Application and pass it your bot's token.
+    # Create the Application
     application = Application.builder().token(BOT_TOKEN).build()
-    application.loop = asyncio.get_event_loop()
-
 
     # Initialize bot state.
     application.bot_data['status'] = 'Idle. Ready to start.'
@@ -222,10 +226,22 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("stop", stop_command))
+    
+    # Run bot in a separate thread
+    bot_thread = Thread(target=run_bot, args=(application,))
+    bot_thread.daemon = True
+    bot_thread.start()
 
-    # Run the bot until the user presses Ctrl-C
-    logger.info("Telegram bot is now running...")
-    application.run_polling()
+    # Start self-pinging in a background thread
+    ping_thread = Thread(target=self_ping)
+    ping_thread.daemon = True
+    ping_thread.start()
+    logger.info("Self-pinging keep-alive service started.")
+
+    # Start Flask server in the main thread
+    logger.info("Flask web service started.")
+    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
 
 if __name__ == "__main__":
     main()
