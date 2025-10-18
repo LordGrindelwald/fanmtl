@@ -140,6 +140,10 @@ def process_novel(novel_url, novel_title, app, context):
 def send_novel(app, novel_url, context, caption=""):
     """Downloads a novel as an EPUB and sends it to the bot owner via Telegram."""
     try:
+        # Force the app to treat the novel as a single volume for filename purposes.
+        app.pack_as_single_file = True
+        app.no_suffix_after_filename = True
+
         # Use the app's built-in packing method to create the EPUB.
         app.pack_by_url(novel_url, {"epub"})
         output_path = app.crawler.output_path
