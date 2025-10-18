@@ -51,7 +51,7 @@ def self_ping():
     while True:
         try:
             if APP_URL:
-                requests.get(APP_URL + "/health")
+                requests.get(APP_URL + "/health", timeout=10)
                 logger.info("Sent keep-alive ping to self.")
         except Exception as e:
             logger.warning(f"Keep-alive ping failed: {e}")
@@ -60,13 +60,13 @@ def self_ping():
 # --- Core Bot Logic ---
 def crawl_and_send(context: ContextTypes.DEFAULT_TYPE):
     bot_data = context.application.bot_data
+    loop = context.application.loop
     bot_data['crawling'] = True
     bot_data['status'] = 'Initializing crawl...'
     logger.info("Starting a new crawl cycle...")
 
     try:
-        app = App()
-        app.initialize()
+        app = App() # The App is initialized here. No 'initialize()' method is needed.
 
         home_url = f"{WEBSITE}list/all/all-newstime-0.html"
         soup = app.crawler.get_soup(home_url)
@@ -97,7 +97,10 @@ def crawl_and_send(context: ContextTypes.DEFAULT_TYPE):
                 novel_title = novel_link.select_one('h4.novel-title').text.strip()
                 bot_data['status'] = f"Processing: {novel_title}"
 
-                asyncio.run(process_novel(novel_url, novel_title, app, context))
+                # Safely run async function from this thread
+                future = asyncio.run_coroutine_threadsafe(process_novel(novel_url, novel_title, app, context), loop)
+                future.result() # Wait for the function to complete
+                
                 time.sleep(1)
     
     except Exception as e:
@@ -107,7 +110,8 @@ def crawl_and_send(context: ContextTypes.DEFAULT_TYPE):
         bot_data['status'] = 'Idle. Awaiting next command.'
         bot_data['crawling'] = False
         logger.info("Crawl cycle finished.")
-        asyncio.run(context.bot.send_message(BOT_OWNER, "Finished crawling all pages."))
+        asyncio.run_coroutine_threadsafe(context.bot.send_message(BOT_OWNER, "Finished crawling all pages."), loop)
+
 
 async def process_novel(novel_url, novel_title, app, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -207,6 +211,8 @@ def main():
 
     # Create the Application and pass it your bot's token.
     application = Application.builder().token(BOT_TOKEN).build()
+    application.loop = asyncio.get_event_loop()
+
 
     # Initialize bot state.
     application.bot_data['status'] = 'Idle. Ready to start.'
