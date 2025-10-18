@@ -247,6 +247,14 @@ if not all([BOT_TOKEN, MONGO_URI, BOT_OWNER]):
      logger.fatal("One or more environment variables are missing (BOT_TOKEN, MONGO_URI, BOT_OWNER). Bot cannot start.")
      raise RuntimeError("Missing essential environment variables.")
 
+# Convert BOT_OWNER to int *after* checking it exists
+try:
+    BOT_OWNER = int(BOT_OWNER)
+except (ValueError, TypeError):
+    logger.fatal("BOT_OWNER environment variable is not a valid integer.")
+    raise RuntimeError("BOT_OWNER must be a valid integer.")
+
+
 if not APP_URL:
     logger.warning("APP_URL environment variable is not set. Self-pinging will be disabled.")
 
