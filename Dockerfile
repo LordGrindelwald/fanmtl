@@ -21,7 +21,8 @@ RUN apt-get update && \
     libxcb-cursor0 \
     nodejs \
     npm && \
-    wget -nv -O- https://download.calibre-ebook.com/linux-installer.sh | sh /dev/stdin && \
+    wget -nv -O- https://download.calibre-ebook.com/linux-installer.sh |
+sh /dev/stdin && \
     rm -rf /var/lib/apt/lists/*
 
 # Set the working directory inside the container.
@@ -33,9 +34,12 @@ COPY requirements.txt .
 # Install the Python dependencies.
 RUN pip install --no-cache-dir -r requirements.txt
 
+# --- ADD THIS LINE TO FIX MODULE NOT FOUND ERROR ---
+# Add the /app directory to Python's import path
+ENV PYTHONPATH=/app
+
 # Copy the rest of your application code into the container.
 COPY . .
-
 # Expose the port that the web service will listen on (Render provides this via $PORT).
 EXPOSE 8080
 
