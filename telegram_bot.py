@@ -61,7 +61,8 @@ def self_ping():
 # --- Core Bot Logic ---
 def crawl_and_send_sync(context: ContextTypes.DEFAULT_TYPE):
     """Synchronous wrapper to run the async crawl process in a thread."""
-    asyncio.run(crawl_and_send(context))
+    loop = context.application.loop
+    asyncio.run_coroutine_threadsafe(crawl_and_send(context), loop)
 
 async def crawl_and_send(context: ContextTypes.DEFAULT_TYPE):
     bot_data = context.application.bot_data
@@ -239,6 +240,7 @@ async def main():
 
     # Run the bot
     logger.info("Telegram bot is now running...")
+    # This will run forever until the process is stopped.
     await application.run_polling()
 
 if __name__ == "__main__":
