@@ -39,6 +39,6 @@ COPY . .
 # Expose the port that the web service will listen on (Render provides this via $PORT).
 EXPOSE 8080
 
-# The command to run your web service (Gunicorn) AND the bot script.
-# Gunicorn runs in the foreground, and the bot runs within that process's threads.
-CMD ["gunicorn", "--bind", "0.0.0.0:${PORT:-8080}", "--workers", "1", "--threads", "8", "--timeout", "0", "telegram_bot:server_app"]
+# The command to run your web service (Gunicorn) which will also start the bot logic.
+# Use the shell form of CMD to allow environment variable expansion for $PORT.
+CMD gunicorn --bind "0.0.0.0:$PORT" --workers 1 --threads 8 --timeout 0 telegram_bot:server_app
