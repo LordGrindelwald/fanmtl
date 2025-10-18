@@ -5,15 +5,12 @@ FROM python:3.11-slim
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies required by the crawler and Calibre.
-# This comprehensive list includes all libraries required by Calibre's installer.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    # Essential tools
     wget \
     ca-certificates \
     tar \
     xz-utils \
-    # Calibre's graphical dependencies (needed even for CLI)
     libxext6 \
     libxrender1 \
     libxtst6 \
@@ -22,12 +19,9 @@ RUN apt-get update && \
     libegl1 \
     libopengl0 \
     libxcb-cursor0 \
-    # Node.js for potential Cloudflare challenges
     nodejs \
     npm && \
-    # Download and run the official Calibre installer for Linux.
     wget -nv -O- https://download.calibre-ebook.com/linux-installer.sh | sh /dev/stdin && \
-    # Clean up apt caches to keep the final image size smaller.
     rm -rf /var/lib/apt/lists/*
 
 # Set the working directory inside the container.
@@ -42,8 +36,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of your application code into the container.
 COPY . .
 
-# Expose the port that the web service will listen on.
+# Expose the port that the web service will listen on (Render provides this via $PORT).
 EXPOSE 8080
 
-# The command to run your web service and bot when the container starts.
-CMD ["python", "telegram_bot.py"]
+# The command to run your web service (Gunicorn) AND the bot script.
+# Gunicorn runs in the foreground, and the bot runs within that process's threads.
+CMD ["gunicorn", "--bind", "0.0.0.0:${PORT:-8080}", "--workers", "1", "--threads", "8", "--timeout", "0", "telegram_bot:server_app"]
