@@ -21,6 +21,7 @@ if app_path not in sys.path:
 # Import necessary lncrawl components directly
 # This import should now work if '/app' is in sys.path
 from lncrawl.core.app import App # Still needed for packing
+# FIX: Corrected Case Sensitivity
 from lncrawl.sources.en.f.fanmtl import FanMTLCrawler # Import specific crawler
 
 from pymongo import MongoClient, errors
@@ -86,17 +87,17 @@ def crawl_and_send_sync(context: ContextTypes.DEFAULT_TYPE):
         logger.error("Telegram application not initialized.")
         return
 
-    loop = telegram_app.loop
-    if not loop or not loop.is_running():
-        # If loop is not running, it might be because it's managed by Application
-        # Try getting it from the application again
-        try:
-            loop = context.application.loop
-        except Exception:
-            logger.error("Could not retrieve a running event loop.")
-            return
+    # FIX: Get the loop from the application, as it's managed by Application now.
+    try:
+        loop = context.application.loop
+        if not loop or not loop.is_running():
+            raise RuntimeError("Event loop not available or not running.")
+    except Exception as e:
+        logger.error(f"Could not retrieve a running event loop for crawl_and_send: {e}")
+        return
 
     asyncio.run_coroutine_threadsafe(crawl_and_send(context), loop)
+
 
 async def crawl_and_send(context: ContextTypes.DEFAULT_TYPE):
     global BOT_OWNER # Ensure BOT_OWNER is accessible
@@ -107,7 +108,7 @@ async def crawl_and_send(context: ContextTypes.DEFAULT_TYPE):
 
     try:
         # Instantiate the specific crawler directly
-        site_crawler = FanmtlCrawler()
+        site_crawler = FanMTLCrawler() # Corrected Case
         site_crawler.initialize()
 
         home_url = f"{WEBSITE}list/all/all-newstime-0.html"
@@ -166,7 +167,7 @@ async def process_novel(novel_url, novel_title, context: ContextTypes.DEFAULT_TY
         processed_novel = novels_collection.find_one({"url": novel_url})
 
         # Instantiate the crawler for this specific novel
-        novel_crawler = FanmtlCrawler()
+        novel_crawler = FanMTLCrawler() # Corrected Case
         novel_crawler.novel_url = novel_url # Set the URL
         novel_crawler.initialize() # Initialize it
 
@@ -296,6 +297,11 @@ def run_bot_polling(application: Application):
     """Runs the Telegram bot's polling loop."""
     logger.info("Starting Telegram bot polling...")
     try:
+        # --- FIX: Set event loop for *this* thread ---
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        logger.info("Created and set new event loop for bot polling thread.")
+        # --- End Fix ---
         application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
         logger.critical(f"Bot polling loop failed critically: {e}", exc_info=True)
@@ -325,17 +331,9 @@ if not APP_URL:
 # Create the Telegram Application
 telegram_app = Application.builder().token(BOT_TOKEN).build()
 
-# Get/Set the event loop *after* the Application is built
-# Gunicorn/Flask might manage the main loop, ensure threads have one if needed
-try:
-    loop = asyncio.get_running_loop()
-    logger.info("Using existing event loop for bot.")
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    logger.info("Created new event loop for bot.")
-
-telegram_app.loop = loop
+# --- REMOVED Redundant Loop Handling ---
+# The loop is now created *inside* the run_bot_polling thread.
+# ---
 
 # Initialize bot state
 telegram_app.bot_data['status'] = 'Idle. Ready to start.'
