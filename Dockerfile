@@ -5,11 +5,15 @@ FROM python:3.11-slim
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies required by the crawler and Calibre.
-# Added libegl1, libopengl0, and libxcb-cursor0 to satisfy Calibre's installation requirements.
+# This comprehensive list includes all libraries required by Calibre's installer.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+    # Essential tools
     wget \
     ca-certificates \
+    tar \
+    xz-utils \
+    # Calibre's graphical dependencies (needed even for CLI)
     libxext6 \
     libxrender1 \
     libxtst6 \
@@ -18,6 +22,7 @@ RUN apt-get update && \
     libegl1 \
     libopengl0 \
     libxcb-cursor0 \
+    # Node.js for potential Cloudflare challenges
     nodejs \
     npm && \
     # Download and run the official Calibre installer for Linux.
@@ -31,13 +36,13 @@ WORKDIR /app
 # Copy the requirements file first to leverage Docker's layer caching.
 COPY requirements.txt .
 
-# Install the Python dependencies specified in your requirements file.
+# Install the Python dependencies.
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of your application code into the container.
 COPY . .
 
-# Expose the port that the web service will listen on. Render provides this as a PORT env var.
+# Expose the port that the web service will listen on.
 EXPOSE 8080
 
 # The command to run your web service and bot when the container starts.
