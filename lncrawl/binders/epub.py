@@ -128,8 +128,11 @@ def bind_epub_book(
         type="text/css",
     )
     book.add_item(intro_item)
-    spine.append(intro_item)
-    toc.append(intro_item)
+    # ------------------- MODIFICATION START -------------------
+    # This section is modified to keep the intro page but not add it to the reading flow (spine).
+    # spine.append(intro_item)
+    # toc.append(intro_item)
+    # -------------------- MODIFICATION END --------------------
 
     spine.append("nav")
 
