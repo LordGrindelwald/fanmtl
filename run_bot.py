@@ -1,8 +1,9 @@
 import logging
 import os
+from telegram import Update
 
-# Import the main initialization and polling functions
-from telegram_bot import initialize_app, run_bot_polling
+# Import the main initialization function
+from telegram_bot import initialize_app
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s [%(threadName)s] - %(message)s',
@@ -18,8 +19,14 @@ if __name__ == "__main__":
         
         if telegram_app:
             logger.info("Starting Telegram bot polling...")
-            # run_bot_polling starts the actual polling loop
-            run_bot_polling(telegram_app)
+            # Application.run_polling() is a blocking call.
+            # It will create and manage its own event loop.
+            # This loop will be accessible via telegram_app.loop for our threads.
+            telegram_app.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                stop_signals=None # Handle stops gracefully in Docker
+            )
+            logger.warning("Telegram bot polling has stopped.")
         else:
             logger.fatal("Failed to initialize Telegram bot application. Exiting.")
             os._exit(1)
