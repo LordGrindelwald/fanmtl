@@ -1,39 +1,28 @@
-# Use a stable, slim version of Python to avoid dependency issues.
-FROM python:3.11-slim
+# Use Python 3.9 slim (matches working repo)
+FROM python:3.9-slim
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
 
 # Install system dependencies
-# Includes dependencies needed by Chromium and Python packages
+# Includes build tools, Python package dependencies, and Chromium
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     wget \
     ca-certificates \
     gnupg \
-    unzip \
-    # Basic build tools some python packages might need implicitly
     build-essential \
-    # Needed for python packages like cryptography, Pillow
     libssl-dev \
     libffi-dev \
     libxml2-dev \
     libxslt1-dev \
     zlib1g-dev \
     libjpeg62-turbo-dev \
-    # --- CHROMIUM v114 (Stable for Selenium 3.141) ---
-    # Add Debian security repo for potentially older but compatible versions if needed
-    # Note: Pinning versions like this makes the build less flexible but more stable for compatibility.
-    # Check if chromium 114 is directly available first. Slim might be Bullseye or Bookworm.
-    # If using Bookworm base:
-    # RUN apt-get install -y chromium=114.* chromium-driver=114.* # Example, exact version might differ
-    # If using Bullseye base (more likely for older compatibility):
-    # May need to add bullseye-backports or specific older repo if 114 isn't in main bullseye
-    # As a robust alternative, install latest available stable Chromium via apt, hoping it works better than google-chrome-stable
+    # --- Install Chromium and Driver via apt ---
     chromium \
     chromium-driver \
-    # --- Other dependencies ---
+    # --- Chromium runtime dependencies ---
     fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -67,6 +56,7 @@ RUN apt-get update && \
     wget \
     xdg-utils && \
     # --- CLEANUP ---
+    apt-get purge -y --auto-remove build-essential && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -74,10 +64,10 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy the requirements file first to leverage Docker's layer caching.
+# Make sure your requirements.txt specifies selenium==3.141.0
 COPY requirements.txt .
 
 # Install the Python dependencies.
-# Ensure correct Selenium version is used (as per requirements.txt)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Add the /app directory to Python's import path
@@ -86,9 +76,14 @@ ENV PYTHONPATH=/app
 # Copy the rest of your application code into the container.
 COPY . .
 
-# FIX: Move 'sources' inside 'lncrawl'
-RUN mv /app/sources /app/lncrawl/sources && \
-    find /app/lncrawl/sources -type d -exec touch {}/__init__.py \;
+# FIX: Move 'sources' inside 'lncrawl' and create __init__.py files
+# Ensure this directory structure matches your project layout
+RUN if [ -d /app/sources ] && [ -d /app/lncrawl ]; then \
+        mv /app/sources /app/lncrawl/sources && \
+        find /app/lncrawl/sources -type d -exec touch {}/__init__.py \; \
+    else \
+        echo "Warning: /app/sources or /app/lncrawl directory not found, skipping move/touch operations." >&2; \
+    fi
 
 # Expose the port that the web service will listen on
 EXPOSE 8080
