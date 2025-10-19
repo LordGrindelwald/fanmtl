@@ -34,7 +34,6 @@ WORKDIR /app
 
 # Copy the requirements file (ensure it has selenium==3.141.0)
 COPY requirements.txt .
-
 # Install the Python dependencies.
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -42,6 +41,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 ENV PYTHONPATH=/app
 
 # Copy the application code
+# This will also copy your new .py and .sh files
 COPY . .
 
 # FIX: Move 'sources' inside 'lncrawl' and create __init__.py files
@@ -52,8 +52,11 @@ RUN if [ -d /app/sources ] && [ -d /app/lncrawl ]; then \
         echo "Warning: /app/sources or /app/lncrawl directory not found." >&2; \
     fi
 
+# Make the new start script executable
+RUN chmod +x /app/start.sh
+
 # Expose the port
 EXPOSE 8080
 
-# The command to run your web service
-CMD gunicorn --bind "0.0.0.0:$PORT" --workers 1 --threads 8 --timeout 0 telegram_bot:server_app
+# The command to run your web service and bot
+CMD ["/app/start.sh"]
