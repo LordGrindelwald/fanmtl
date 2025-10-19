@@ -3,11 +3,13 @@ import logging
 import time
 import requests
 import asyncio
-from threading import Thread
+from threading import Thread, current_thread # Import current_thread
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import shutil # Import shutil for directory removal
+import re # Import re
+from datetime import datetime # Import datetime
 
 # --- DIRECTLY MODIFY PYTHON PATH ---
 import sys
@@ -35,7 +37,7 @@ APP_URL = os.getenv("APP_URL")
 
 # --- Setup ---
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s [%(threadName)s] - %(message)s', # Added threadName
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
@@ -122,6 +124,7 @@ def crawl_and_send_sync(context: ContextTypes.DEFAULT_TYPE):
     # --- End Fix ---
 
     # Schedule the async function to run on the retrieved loop
+    logger.info(f"Scheduling crawl_and_send coroutine on loop {loop}")
     asyncio.run_coroutine_threadsafe(crawl_and_send(context), loop)
 
 
@@ -436,6 +439,8 @@ async def send_novel(crawler, novel_url, context: ContextTypes.DEFAULT_TYPE, cap
 
 # --- Telegram Command Handlers ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # <<< ADDED LOGGING >>>
+    logger.info(f"Entered start_command handler for update ID: {update.update_id}")
     user_id = update.effective_user.id if update.effective_user else None
     logger.info(f"Received /start command from user ID: {user_id}")
     if not user_id or user_id != BOT_OWNER:
@@ -454,6 +459,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thread.start()
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+     # <<< ADDED LOGGING >>>
+     logger.info(f"Entered status_command handler for update ID: {update.update_id}")
      user_id = update.effective_user.id if update.effective_user else None
      # Log status requests as debug to reduce noise unless needed
      logger.debug(f"Received /status command from user ID: {user_id}")
@@ -467,6 +474,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+     # <<< ADDED LOGGING >>>
+     logger.info(f"Entered stop_command handler for update ID: {update.update_id}")
      user_id = update.effective_user.id if update.effective_user else None
      logger.info(f"Received /stop command from user ID: {user_id}")
      if not user_id or user_id != BOT_OWNER:
@@ -490,7 +499,9 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Initialization and Startup ---
 def run_bot_polling(application: Application):
     """Runs the Telegram bot's polling loop in the current thread."""
-    logger.info("Starting Telegram bot polling...")
+    # <<< MODIFIED LOGGING >>>
+    thread_name = current_thread().name # Get current thread name
+    logger.info(f"Starting Telegram bot polling in thread: {thread_name}")
     try:
         # --- Create and set event loop for *this* thread ---
         loop = asyncio.new_event_loop()
@@ -503,16 +514,22 @@ def run_bot_polling(application: Application):
         # --- End Fix ---
 
         # Disable PTB's signal handlers as Render/Docker manages signals
+        logger.info("Calling application.run_polling...")
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
             stop_signals=None # Pass None to disable signal handling
         )
-        logger.info("run_polling finished.") # Will likely not be reached if stop_signals=None
+        # <<< ADDED LOGGING >>>
+        logger.warning("application.run_polling finished unexpectedly.") # Should ideally run forever
 
     except Exception as e:
         logger.critical(f"Bot polling loop failed critically: {e}", exc_info=True)
         # Force exit the entire process if polling fails, Gunicorn should restart it.
         os._exit(1)
+    finally:
+        # <<< ADDED LOGGING >>>
+        logger.critical("run_bot_polling function is exiting.") # Should not happen unless there's an error
+
 
 #
 # --- STARTUP LOGIC ---
