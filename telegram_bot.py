@@ -38,7 +38,7 @@ APP_URL = os.getenv("APP_URL")
 # --- Setup ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s [%(threadName)s] - %(message)s', # Added threadName
-    level=logging.INFO
+    level=logging.INFO # Keep level at INFO for now
 )
 logger = logging.getLogger(__name__)
 # Flask app instance for Gunicorn
@@ -440,9 +440,10 @@ async def send_novel(crawler, novel_url, context: ContextTypes.DEFAULT_TYPE, cap
 # --- Telegram Command Handlers ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # <<< ADDED LOGGING >>>
+    logger.info(f"Received update in start_command: {update}") # Log the full update object
     logger.info(f"Entered start_command handler for update ID: {update.update_id}")
     user_id = update.effective_user.id if update.effective_user else None
-    logger.info(f"Received /start command from user ID: {user_id}")
+    logger.info(f"/start command user ID: {user_id} | BOT_OWNER: {BOT_OWNER}") # Log comparison values
     if not user_id or user_id != BOT_OWNER:
         logger.warning(f"Unauthorized /start attempt by user ID: {user_id}")
         await update.message.reply_text("Sorry, only the bot owner can use this command.")
@@ -460,8 +461,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
      # <<< ADDED LOGGING >>>
+     logger.info(f"Received update in status_command: {update}") # Log the full update object
      logger.info(f"Entered status_command handler for update ID: {update.update_id}")
      user_id = update.effective_user.id if update.effective_user else None
+     logger.info(f"/status command user ID: {user_id} | BOT_OWNER: {BOT_OWNER}") # Log comparison values
      # Log status requests as debug to reduce noise unless needed
      logger.debug(f"Received /status command from user ID: {user_id}")
      if not user_id or user_id != BOT_OWNER:
@@ -475,8 +478,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
      # <<< ADDED LOGGING >>>
+     logger.info(f"Received update in stop_command: {update}") # Log the full update object
      logger.info(f"Entered stop_command handler for update ID: {update.update_id}")
      user_id = update.effective_user.id if update.effective_user else None
+     logger.info(f"/stop command user ID: {user_id} | BOT_OWNER: {BOT_OWNER}") # Log comparison values
      logger.info(f"Received /stop command from user ID: {user_id}")
      if not user_id or user_id != BOT_OWNER:
         logger.warning(f"Unauthorized /stop attempt by user ID: {user_id}")
@@ -599,5 +604,7 @@ bot_thread.start()
 logger.info("Bot polling thread started. Gunicorn worker initialized and serving Flask app.")
 
 # Gunicorn manages the main process life cycle and serves `server_app`.
+# The bot polling and pinging run in background daemon threads.
+# No `if __name__ == "__main__":` block or infinite loop needed here._app`.
 # The bot polling and pinging run in background daemon threads.
 # No `if __name__ == "__main__":` block or infinite loop needed here.
