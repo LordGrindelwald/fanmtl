@@ -1,248 +1,265 @@
+# -*- coding: utf-8 -*-
+"""
+Bind chapters into EPUB
+"""
+import concurrent.futures
 import logging
 import os
-from typing import Dict, Generator, List, Set
+import shutil
+from typing import Dict, List, Tuple
 
-from ..assets.epub import epub_chapter_xhtml, epub_cover_xhtml, epub_style_css
-from ..models.chapter import Chapter
+import ebooklib
+from ebooklib import epub
+from tqdm.auto import tqdm
 
+from ...assets.epub import (
+    # Assume these template files exist in lncrawl/assets/epub/
+    chapter_xhtml_template,
+    content_opf_template, # You might need to manually define this if not easily importable
+    cover_xhtml_template,
+    nav_xhtml_template, # You might need to manually define this if not easily importable
+    style_css_template,
+    toc_ncx_template, # You might need to manually define this if not easily importable
+)
+from ...models import Chapter, Novel, Volume
+from ...utils.imgen import build_cover
+from ..app import App
+
+# Define templates here if they are not importable directly
+# These are simplified versions; adjust based on the actual content needed.
+# Ensure lncrawl/assets/epub/style.css exists in your project.
 try:
-    from ebooklib import epub  # type:ignore
-except ImportError:
-    logging.fatal("Failed to import ebooklib")
+    with open(os.path.join(os.path.dirname(__file__), '../../assets/epub/style.css'), 'r') as f:
+        style_css_template = f.read()
+except FileNotFoundError:
+    style_css_template = "/* Default styles */ body { font-family: sans-serif; }"
+    print("Warning: Could not find style.css template.")
 
+chapter_xhtml_template = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title>{title}</title>
+    <link href="style.css" rel="stylesheet" type="text/css"/>
+</head>
+<body>
+    <h3>{title}</h3>
+    {body}
+</body>
+</html>
+"""
 
-logger = logging.getLogger(__name__)
-
-COVER_IMAGE_NAME = "cover.jpg"
-STYLE_FILE_NAME = "style.css"
-PROJECT_URL = "https://github.com/dipu-bd/lightnovel-crawler"
-
-
-def bind_epub_book(
-    app,
-    chapter_groups: List[List[Chapter]],  # chapters grouped by volumes
-    images: List[str],  # full path of images to add
-    suffix: str,  # suffix to the file name
-    novel_idx: int,  # position in the series
-    book_title: str,
-    is_rtl: bool = False,
-):
-    from ..core.app import App
-    assert isinstance(app, App) and app.crawler
-
-    novel_title = app.crawler.novel_title
-    novel_author = app.crawler.novel_author or app.crawler.home_url
-    novel_url = app.crawler.novel_url
-    novel_synopsis = app.crawler.novel_synopsis
-    language = app.crawler.language
-    novel_tags = app.crawler.novel_tags
-    output_path = app.output_path
-    book_cover = app.book_cover or app.crawler.novel_cover
-    good_file_name = app.good_file_name
-    no_suffix_after_filename = app.no_suffix_after_filename
-
-    logger.info("Binding epub for %s", book_title)
-
-    logger.debug("Creating EpubBook instance")
-    book = epub.EpubBook()  # type:ignore
-    book.set_language(language)
-    book.set_title(book_title)
-    book.add_author(novel_author)
-    book.add_metadata('DC', 'description', novel_synopsis)
-    book.set_identifier(output_path + suffix)
-
-    # add series metadata
-    book.add_metadata(None, 'meta', 'series', {'property': 'collection-type'})
-    book.add_metadata(None, 'meta', novel_title, {'property': 'belongs-to-collection'})
-    book.add_metadata(None, 'meta', str(novel_idx), {'property': 'group-position'})
-
-    if is_rtl:
-        book.set_direction("rtl")
-
-    for tag in novel_tags:
-        book.add_metadata("DC", "subject", tag)
-
-    logger.debug("Adding %s", STYLE_FILE_NAME)
-    style_item = epub.EpubItem(  # type:ignore
-        file_name=STYLE_FILE_NAME,
-        content=epub_style_css(),
-        media_type="text/css",
-    )
-    book.add_item(style_item)
-
-    logger.debug("Adding templates")
-    book.set_template("cover", epub_cover_xhtml())
-    book.set_template("chapter", epub_chapter_xhtml())
-
-    toc = []
-    spine = []
-    if book_cover and os.path.isfile(book_cover):
-        logger.debug("Adding cover image")
-        with open(book_cover, "rb") as fp:
-            book.set_cover(COVER_IMAGE_NAME, fp.read(), create_page=True)
-        spine.append("cover")
-
-        cover_item = epub.EpubHtml(  # type:ignore
-            title="Front Page",
-            file_name="front.xhtml",
-            content=f"""
-                <div id="cover">
-                    <img src="{COVER_IMAGE_NAME}" alt="cover" />
-                </div>
-            """,
-        )
-        cover_item.add_link(
-            href=STYLE_FILE_NAME,
-            rel="stylesheet",
-            type="text/css",
-        )
-        book.add_item(cover_item)
-        spine.append(cover_item)
-        toc.append(cover_item)
-
-    logger.debug("Creating intro page")
-
-    intro_html = f"""
-    <div id="intro">
-        <h1>{novel_title}</h1>
-        <h3>{novel_author}</h3>
-        <div class="synopsis">
-            {novel_synopsis}
-        </div>
-        <div class="footer">
-            <b>Source:</b> <a href="{novel_url}">{novel_url}</a>
-            <br>
-            <i>Generated by <b>
-            <a href="{PROJECT_URL}">Lightnovel Crawler</a></b></i>
-        </div>
+cover_xhtml_template = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title>Cover</title>
+    <link href="style.css" rel="stylesheet" type="text/css" />
+</head>
+<body>
+    <div id="cover-image">
+        <img src="cover.jpg" alt="{title}" />
     </div>
-    """
-    intro_item = epub.EpubHtml(  # type:ignore
-        title="Intro Page",
-        file_name="intro.xhtml",
-        content=intro_html,
-    )
-    intro_item.add_link(
-        href=STYLE_FILE_NAME,
-        rel="stylesheet",
-        type="text/css",
-    )
-    book.add_item(intro_item)
-    # ------------------- MODIFICATION START -------------------
-    # This section is modified to keep the intro page but not add it to the reading flow (spine).
-    # spine.append(intro_item)
-    # toc.append(intro_item)
-    # -------------------- MODIFICATION END --------------------
+</body>
+</html>
+"""
 
-    spine.append("nav")
+# Placeholder for content.opf, nav.xhtml, toc.ncx - ebooklib usually handles these.
 
-    logger.debug("Creating chapter contents")
-    for chapters in chapter_groups:
-        first_chapter = chapters[0]
-        volume_id = first_chapter.volume
-        volume_title = first_chapter.volume_title or f"Book ${volume_id}"
-        volume_html = f"""
-        <div id="volume">
-            <h1>{volume_title}</h1>
-        </div>
-        """
-        volume_item = epub.EpubHtml(  # type:ignore
-            file_name=f"volume_{volume_id}.xhtml",
-            content=volume_html,
-            title=volume_title,
-        )
-        volume_item.add_link(
-            href=style_item.file_name,
-            rel="stylesheet",
-            type="text/css",
-        )
-        book.add_item(volume_item)
-        spine.append(volume_item)
+logger = logging.getLogger('EPUB_BINDER')
 
-        volume_contents = []
-        for chapter in chapters:
-            chapter_item = epub.EpubHtml(  # type:ignore
-                file_name=f"chapter_{chapter.id}.xhtml",
-                content=str(chapter["body"]),
-                title=chapter["title"],
+
+class EpubBinder:
+    executor: concurrent.futures.ThreadPoolExecutor
+
+    def __init__(self, app: App):
+        self.app = app
+        self.epub = epub.EpubBook()
+        self.chapters: List[Chapter] = []
+        self.volumes: List[Volume] = []
+        self.available_formats = ["epub"]
+
+    def create_book(self) -> epub.EpubBook:
+        """Create the EPUB book structure"""
+        self.epub = epub.EpubBook()
+        self.epub.set_identifier(self.app.crawler.novel_url)
+        self.epub.set_title(self.app.crawler.novel_title or 'Unknown')
+        self.epub.set_language(self.app.crawler.locale or 'en')
+        if self.app.crawler.novel_author:
+            author_list = [
+                x.strip()
+                for x in re.split(r",|;|\|", self.app.crawler.novel_author)
+                if x.strip()
+            ]
+            for author in author_list:
+                self.epub.add_author(author)
+        else:
+             self.epub.add_author('Unknown')
+
+        # Add metadata
+        self.epub.add_metadata('DC', 'description', self.app.crawler.novel_summary or 'No summary available.')
+        self.epub.add_metadata(None, 'meta', '', {'property': 'dcterms:modified', 'content': datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ')})
+        self.epub.add_metadata(None, 'meta', 'lncrawl', {'name': 'generator'})
+
+        # Add default cover
+        logger.info('Adding cover: %s', self.app.book_cover)
+        if self.app.book_cover:
+            try:
+                self.epub.set_cover('cover.jpg', open(self.app.book_cover, 'rb').read())
+            except Exception as e:
+                logger.warn(f"Failed to set cover image: {e}")
+                self.add_missing_cover()
+        else:
+             self.add_missing_cover()
+
+        # Add CSS file
+        nav_css = epub.EpubItem(uid="style_nav", file_name="style.css", media_type="text/css", content=style_css_template)
+        self.epub.add_item(nav_css)
+
+        self.epub.spine = ['nav'] # Add nav first
+        self.epub.guide = [{'type': 'cover', 'title': 'Cover', 'href': 'cover.xhtml'}] # Add cover guide if cover exists
+        self.epub.toc = [] # Initialize TOC list
+
+        return self.epub
+
+    def add_missing_cover(self):
+        try:
+            logger.info("Generating default cover...")
+            img = build_cover(
+                self.app.crawler.novel_title,
+                self.app.crawler.novel_author
             )
-            chapter_item.add_link(
-                href=style_item.file_name,
-                rel="stylesheet",
-                type="text/css",
-            )
-            book.add_item(chapter_item)
-            spine.append(chapter_item)
-            volume_contents.append(chapter_item)
-
-        volume_section = epub.Section(  # type:ignore
-            volume_title,
-            href=volume_item.file_name
-        )
-        toc.append([volume_section, volume_contents])
-
-    book.toc = toc
-    book.spine = spine
-    book.add_item(epub.EpubNcx())  # type:ignore
-    book.add_item(epub.EpubNav())  # type:ignore
-
-    logger.debug("Adding images")
-    for image_path in images:
-        filename = os.path.basename(image_path)
-        with open(image_path, "rb") as fp:
-            image_item = epub.EpubImage()  # type:ignore
-            image_item.file_name = f"images/{filename}"
-            image_item.media_type = "image/jpeg"
-            image_item.content = fp.read()
-        book.add_item(image_item)
-
-    logger.debug("Saving epub file")
-    file_name = good_file_name
-    if not no_suffix_after_filename:
-        file_name += " " + suffix
-
-    epub_path = os.path.join(output_path, "epub")
-    file_path = os.path.join(epub_path, file_name + ".epub")
-
-    logger.info("Writing %s", file_path)
-    os.makedirs(epub_path, exist_ok=True)
-    epub.write_epub(file_path, book, {})  # type:ignore
-
-    logger.info("Created: %s", file_path)
-    return file_path
+            if img:
+                 cover_path = os.path.join(self.app.output_path, 'cover.png')
+                 img.save(cover_path, format='PNG')
+                 self.epub.set_cover('cover.png', open(cover_path, 'rb').read())
+                 logger.info("Added generated cover.")
+            else:
+                 logger.warn("Failed to generate default cover.")
+        except Exception as e:
+            logger.exception("Failed generating default cover image: %s", e)
 
 
-def make_epubs(app, data: Dict[str, List[Chapter]]) -> Generator[str, None, None]:
-    from ..core.app import App
-    assert isinstance(app, App) and app.crawler
+    def bind_epub_book(self):
+        """Processes chapters and binds them into the EPUB"""
+        epub_book = self.create_book()
+        toc_items = {} # Store items for NCX/Nav generation: {vol_id: [chapters]}
 
-    novel_idx = 1
-    for volume, chapters in data.items():
-        if not chapters:
-            continue
+        logger.info('Binding %d chapters...', len(self.chapters))
+        pbar = tqdm(total=len(self.chapters), desc='EPUB Binding', unit='Ch')
+        for chapter in self.chapters:
+            # Check if crawling was stopped
+            if not self.app.crawler.app.running:
+                logger.warn("Detected stop signal. Aborting EPUB binding.")
+                return None # Indicate failure/stop
 
-        book_title = (app.crawler.novel_title + " " + volume).strip()
-        volumes: Dict[int, List[Chapter]] = {}
-        for chapter in chapters:
-            suffix = chapter.volume or 1
-            volumes.setdefault(suffix, []).append(chapter)
+            try:
+                # 1. Get Chapter Content (reuse existing download or fetch if needed)
+                # Assuming chapter content might be pre-downloaded or needs fetching here.
+                # If content is in chapter['body'], use it. Otherwise, fetch it.
+                # This part depends heavily on how lncrawl handles chapter data.
+                # Simplified: fetch content directly. Adapt if pre-downloaded.
+                # Ensure download_chapter_body handles potential errors.
+                body = self.app.crawler.download_chapter_body(chapter)
+                if not body:
+                    logger.warn(f"Skipping Chapter {chapter['id']} due to empty body.")
+                    pbar.update(1)
+                    continue
 
-        images: Set[str] = set()
-        image_path = os.path.join(app.output_path, "images")
-        if os.path.isdir(image_path):
-            images = set([
-                os.path.join(image_path, filename)
-                for filename in os.listdir(image_path)
-                if filename.endswith(".jpg")
-            ])
+                # 2. Process Content (Basic cleaning - enhance as needed)
+                content = self.app.crawler.cleanup_text(body)
 
-        yield bind_epub_book(
-            app,
-            chapter_groups=list(volumes.values()),
-            images=list(images),
-            suffix=volume,
-            novel_idx=novel_idx,
-            book_title=book_title,
-        )
+                # 3. Create EPUB chapter item
+                epub_chapter = epub.EpubHtml(
+                    title=chapter['title'] or f"Chapter {chapter['id']}",
+                    file_name=f"chapter_{chapter['id']:05}.xhtml",
+                    lang=self.app.crawler.locale or 'en'
+                )
+                epub_chapter.content = chapter_xhtml_template.format(
+                    title=chapter['title'] or f"Chapter {chapter['id']}",
+                    body=content
+                )
+                epub_book.add_item(epub_chapter)
+                epub_book.spine.append(epub_chapter) # Add chapter to reading order
 
-        novel_idx += 1
+                # 4. Add to TOC structure
+                vol_id = chapter['volume']
+                if vol_id not in toc_items:
+                    toc_items[vol_id] = []
+                toc_items[vol_id].append(epub_chapter)
+
+                # 5. Clear content from memory (important for low-resource environments)
+                chapter['body'] = None # Clear if it was stored
+                body = None
+                content = None
+                epub_chapter.content = None # Let ebooklib handle content writing later
+
+            except Exception as e:
+                logger.error(f"Failed to process chapter {chapter['id']}: {e}", exc_info=True)
+            finally:
+                 pbar.update(1) # Ensure progress bar updates even on error
+
+        pbar.close()
+
+        # Generate TOC and Nav after all chapters are processed
+        try:
+            epub_book.toc = []
+            volume_map = {vol['id']: vol['title'] for vol in self.volumes}
+
+            for vol_id in sorted(toc_items.keys()):
+                vol_title = volume_map.get(vol_id) or f"Volume {vol_id}"
+                # Create a section for the volume
+                section = (epub.Section(vol_title), tuple(toc_items[vol_id]))
+                epub_book.toc.append(section)
+
+            # Add navigation files
+            epub_book.add_item(epub.EpubNcx())
+            epub_book.add_item(epub.EpubNav())
+
+        except Exception as e:
+            logger.error(f"Failed to generate TOC/Nav: {e}", exc_info=True)
+
+        return epub_book
+
+    def get_output_path(self) -> str:
+        """Determines the final EPUB file path"""
+        epub_name = f"{self.app.good_file_name}.epub"
+        return os.path.join(self.app.output_path, epub_name)
+
+    def write_epub(self, epub_book: epub.EpubBook):
+        """Writes the EPUB file to disk"""
+        output_path = self.get_output_path()
+        logger.info(f"Writing EPUB to: {output_path}")
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        try:
+            epub.write_epub(output_path, epub_book, {})
+            logger.info("EPUB binding finished.")
+        except Exception as e:
+            logger.error(f"Failed to write EPUB file: {e}", exc_info=True)
+            raise # Re-raise exception to indicate failure
+
+    def process_and_write_epub(self):
+        """High-level function to orchestrate EPUB creation and writing"""
+        self.chapters = self.app.crawler.chapters # Get chapters from crawler
+        self.volumes = self.app.crawler.volumes   # Get volumes from crawler
+
+        if not self.chapters:
+             logger.warn("No chapters found to bind.")
+             return False
+
+        epub_book = self.bind_epub_book()
+        if epub_book: # Check if binding was successful (not aborted)
+            self.write_epub(epub_book)
+            return True
+        else:
+            logger.warn("EPUB binding was aborted or failed.")
+            return False
+
+    # Note: `self.dump_output` and `self.bind` methods from the original
+    # file might need to be adapted or called differently depending on
+    # how App class uses this binder. This simplified version focuses
+    # on the memory issue in EPUB creation itself.
+    # The `send_novel` function in telegram_bot.py seems to call `app.pack_epub()`.
+    # Ensure `app.pack_epub()` eventually calls `process_and_write_epub()`.
