@@ -44,7 +44,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 server_app = Flask(__name__)
 
-telegram_app = None
+# REMOVED global telegram_app variable
 BOT_OWNER = None
 
 # --- Database Connection ---
@@ -119,40 +119,32 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # --- Core Bot Logic ---
 def crawl_and_send_sync(context: ContextTypes.DEFAULT_TYPE):
-    global telegram_app
-    if not telegram_app:
-        # This check might be redundant if telegram_app is always the one from context
-        # but kept for safety.
-        telegram_app = context.application
-    
-    if not telegram_app:
-        logger.error("Telegram application not initialized.")
+    """Synchronous wrapper to run the async crawl in a new thread."""
+    if not context.application:
+        logger.error("Telegram application not found in context.")
         return
 
     try:
-        if hasattr(telegram_app, 'loop') and telegram_app.loop:
-            loop = telegram_app.loop
-            if not loop.is_running():
-                 raise RuntimeError("Event loop found but is not running.")
-            logger.info(f"Using event loop from telegram_app.loop: {loop} for crawl task.")
-        else:
-             # Fallback to context's loop if available, though application.loop should be the one
-             loop = context.application.loop
-             if not (loop and loop.is_running()):
-                raise RuntimeError("telegram_app.loop or context.application.loop attribute not found or is None/not running.")
+        # Get the running event loop from the application object
+        loop = context.application.loop
+        if not (loop and loop.is_running()):
+             raise RuntimeError("context.application.loop not found or is not running.")
+        logger.info(f"Using event loop from context.application.loop: {loop} for crawl task.")
 
     except Exception as e:
-        logger.error(f"Could not retrieve a running event loop for crawl_and_send: {e}", exc_info=True)
+        logger.error(f"Could not retrieve a running event loop: {e}", exc_info=True)
         if BOT_OWNER:
              try:
-                 # Ensure we use a valid, running loop to send the error
-                 target_loop = telegram_app.loop if (telegram_app and telegram_app.loop and telegram_app.loop.is_running()) else asyncio.get_running_loop()
+                 # We need a loop to send this error.
+                 # We're in a bad state, so try to get *any* running loop
+                 # This is a best-effort attempt.
+                 error_loop = asyncio.get_running_loop()
                  asyncio.run_coroutine_threadsafe(
                      context.bot.send_message(BOT_OWNER, f"Error starting crawl: Could not get event loop. {e}"),
-                     target_loop
+                     error_loop
                  ).result(timeout=10)
              except Exception as report_e:
-                 logger.error(f"Failed to report loop error to user: {report_e}")
+                 logger.error(f"Failed to report loop error to user (this is bad): {report_e}")
         return
 
     logger.info(f"Scheduling crawl_and_send coroutine on loop {loop}")
@@ -414,9 +406,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("A crawl is already in progress. Use /status to check.")
     else:
         await update.message.reply_text("Crawl started. I will process all novels. Use /status to check my progress.")
-        # We need to set the global telegram_app variable for crawl_and_send_sync
-        global telegram_app
-        telegram_app = context.application
+        # We run the synchronous function in a new thread.
+        # It gets all the info it needs from the 'context' object.
         thread = Thread(target=crawl_and_send_sync, args=(context,), name="CrawlThread", daemon=True)
         thread.start()
 
@@ -448,32 +439,7 @@ async def unauthorized_user_handler(update: Update, context: ContextTypes.DEFAUL
 
 
 # --- Initialization and Startup ---
-def run_bot_polling(application: Application):
-    thread_name = current_thread().name
-    logger.info(f"Starting Telegram bot polling in thread: {thread_name}")
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        logger.info(f"Created and set new event loop {loop} for bot polling thread.")
-        application.loop = loop
-        logger.info(f"Assigned loop {loop} to application instance.")
-
-        # Set the global telegram_app variable
-        global telegram_app
-        telegram_app = application
-        
-        logger.info("Calling application.run_polling...")
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            stop_signals=None
-        )
-        logger.warning("application.run_polling finished unexpectedly.")
-    except Exception as e:
-        logger.critical(f"Bot polling loop failed critically: {e}", exc_info=True)
-        os._exit(1)
-    finally:
-        logger.critical("run_bot_polling function is exiting.")
-
+# REMOVED run_bot_polling function. It's not needed.
 
 def initialize_app() -> Application:
     global BOT_OWNER, APP_URL
