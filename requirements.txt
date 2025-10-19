@@ -4,7 +4,9 @@ ascii==1.0.0
 regex==2023.10.3
 packaging==23.2
 lxml==5.1.0
-pyease-grpc==1.6.0 # <-- Changed this line
+pyease-grpc==1.6.0
+grpcio==1.49.1      # <-- ADD THIS LINE
+grpcio-tools==1.49.1 # <-- ADD THIS LINE
 python-dotenv==1.0.0
 beautifulsoup4==4.12.2
 requests==2.31.0
@@ -37,7 +39,7 @@ python-telegram-bot==20.8
 
 # web service requirements
 Flask==3.0.0
-gunicorn # Replaced uvicorn
+gunicorn
 
 # Added for Telegram Bot and Database
 pymongo
