@@ -1,17 +1,13 @@
-# Use Python 3.9 slim (matches working repo)
-FROM python:3.9-slim
+# Use a slim Python 3.9 base image for compatibility
+FROM python:3.9-slim as builder
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
 
-# Install system dependencies
-# Includes build tools, Python package dependencies, and Chromium
+# Install build dependencies and Chromium in a single layer to reduce size
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    wget \
-    ca-certificates \
-    gnupg \
     build-essential \
     libssl-dev \
     libffi-dev \
@@ -19,10 +15,24 @@ RUN apt-get update && \
     libxslt1-dev \
     zlib1g-dev \
     libjpeg62-turbo-dev \
-    # --- Install Chromium and Driver via apt ---
     chromium \
     chromium-driver \
-    # --- Chromium runtime dependencies ---
+    # Cleanup build dependencies and apt cache
+    && apt-get purge -y --auto-remove build-essential \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Use a new, clean stage for the final image to keep it small
+FROM python:3.9-slim
+
+# Copy only the necessary installed browser from the builder stage
+COPY --from=builder /usr/lib/chromium /usr/lib/chromium
+COPY --from=builder /usr/bin/chromium /usr/bin/chromium
+COPY --from=builder /usr/bin/chromium-driver /usr/bin/chromium-driver
+COPY --from=builder /usr/share/doc/chromium /usr/share/doc/chromium
+
+# Install runtime dependencies for Chromium
+RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -54,42 +64,33 @@ RUN apt-get update && \
     libxtst6 \
     lsb-release \
     wget \
-    xdg-utils && \
-    # --- CLEANUP ---
-    # Remove build tools after installation
-    apt-get purge -y --auto-remove build-essential && \
-    # Clean apt cache
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    xdg-utils \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set the working directory inside the container.
+# Set the working directory
 WORKDIR /app
 
-# Copy the requirements file first to leverage Docker's layer caching.
-# Make sure your requirements.txt specifies selenium==3.141.0
+# Install Python dependencies
 COPY requirements.txt .
-
-# Install the Python dependencies.
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Add the /app directory to Python's import path
 ENV PYTHONPATH=/app
 
-# Copy the rest of your application code into the container.
+# Copy the application code
 COPY . .
 
-# FIX: Move 'sources' inside 'lncrawl' and create __init__.py files
-# Ensure this directory structure matches your project layout
-# CORRECTED SYNTAX: Escaped semicolon for find -exec
+# Move sources directory and create __init__.py files
 RUN if [ -d /app/sources ] && [ -d /app/lncrawl ]; then \
         mv /app/sources /app/lncrawl/sources && \
         find /app/lncrawl/sources -type d -exec touch {}/__init__.py \; ; \
     else \
-        echo "Warning: /app/sources or /app/lncrawl directory not found, skipping move/touch operations." >&2; \
+        echo "Warning: /app/sources or /app/lncrawl directory not found." >&2; \
     fi
 
-# Expose the port that the web service will listen on
+# Expose the port
 EXPOSE 8080
 
-# The command to run your web service (Gunicorn)
+# The command to run your web service
 CMD gunicorn --bind "0.0.0.0:$PORT" --workers 1 --threads 8 --timeout 0 telegram_bot:server_app
