@@ -23,7 +23,7 @@ html5lib==1.1
 base58==2.1.1
 python-box==7.1.1
 pycryptodome==3.19.0
-selenium>=3.141.0
+selenium==4.9.0 # <-- Changed this line
 tenacity>=8.2.3
 ecdsa>=0.14
 
