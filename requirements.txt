@@ -4,9 +4,9 @@ ascii==1.0.0
 regex==2023.10.3
 packaging==23.2
 lxml==5.1.0
-pyease-grpc==1.6.0
-grpcio==1.49.1      # <-- ADD THIS LINE
-grpcio-tools==1.49.1 # <-- ADD THIS LINE
+# pyease-grpc==1.6.0 # <-- REMOVED / COMMENTED OUT
+grpcio==1.49.1      # <-- KEEP
+grpcio-tools==1.49.1 # <-- KEEP
 python-dotenv==1.0.0
 beautifulsoup4==4.12.2
 requests==2.31.0
@@ -17,7 +17,7 @@ colorama==0.4.6
 tqdm==4.66.1
 PyExecJS==1.5.1
 ebooklib==0.18
-pillow==10.1.0
+pillow==1.0.10
 readability-lxml==0.8.1
 questionary==2.0.1
 prompt-toolkit==3.0.36
