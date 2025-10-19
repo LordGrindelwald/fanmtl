@@ -121,6 +121,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 def crawl_and_send_sync(context: ContextTypes.DEFAULT_TYPE):
     global telegram_app
     if not telegram_app:
+        # This check might be redundant if telegram_app is always the one from context
+        # but kept for safety.
+        telegram_app = context.application
+    
+    if not telegram_app:
         logger.error("Telegram application not initialized.")
         return
 
@@ -131,15 +136,20 @@ def crawl_and_send_sync(context: ContextTypes.DEFAULT_TYPE):
                  raise RuntimeError("Event loop found but is not running.")
             logger.info(f"Using event loop from telegram_app.loop: {loop} for crawl task.")
         else:
-             raise RuntimeError("telegram_app.loop attribute not found or is None.")
+             # Fallback to context's loop if available, though application.loop should be the one
+             loop = context.application.loop
+             if not (loop and loop.is_running()):
+                raise RuntimeError("telegram_app.loop or context.application.loop attribute not found or is None/not running.")
 
     except Exception as e:
         logger.error(f"Could not retrieve a running event loop for crawl_and_send: {e}", exc_info=True)
         if BOT_OWNER:
              try:
+                 # Ensure we use a valid, running loop to send the error
+                 target_loop = telegram_app.loop if (telegram_app and telegram_app.loop and telegram_app.loop.is_running()) else asyncio.get_running_loop()
                  asyncio.run_coroutine_threadsafe(
                      context.bot.send_message(BOT_OWNER, f"Error starting crawl: Could not get event loop. {e}"),
-                     telegram_app.loop
+                     target_loop
                  ).result(timeout=10)
              except Exception as report_e:
                  logger.error(f"Failed to report loop error to user: {report_e}")
@@ -404,6 +414,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("A crawl is already in progress. Use /status to check.")
     else:
         await update.message.reply_text("Crawl started. I will process all novels. Use /status to check my progress.")
+        # We need to set the global telegram_app variable for crawl_and_send_sync
+        global telegram_app
+        telegram_app = context.application
         thread = Thread(target=crawl_and_send_sync, args=(context,), name="CrawlThread", daemon=True)
         thread.start()
 
@@ -444,6 +457,11 @@ def run_bot_polling(application: Application):
         logger.info(f"Created and set new event loop {loop} for bot polling thread.")
         application.loop = loop
         logger.info(f"Assigned loop {loop} to application instance.")
+
+        # Set the global telegram_app variable
+        global telegram_app
+        telegram_app = application
+        
         logger.info("Calling application.run_polling...")
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
@@ -457,8 +475,8 @@ def run_bot_polling(application: Application):
         logger.critical("run_bot_polling function is exiting.")
 
 
-def initialize_app():
-    global telegram_app, BOT_OWNER, APP_URL
+def initialize_app() -> Application:
+    global BOT_OWNER, APP_URL
 
     if not all([BOT_TOKEN, MONGO_URI, BOT_OWNER_STR]):
          logger.fatal("FATAL: Missing one or more environment variables (BOT_TOKEN, MONGO_URI, BOT_OWNER). Bot cannot start.")
@@ -480,36 +498,25 @@ def initialize_app():
         logger.info(f"APP_URL set to: {APP_URL}")
 
     logger.info("Building Telegram Application...")
-    telegram_app = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).build()
     logger.info("Telegram Application built.")
 
-    telegram_app.bot_data['status'] = 'Idle. Ready to start.'
-    telegram_app.bot_data['crawling'] = False
+    application.bot_data['status'] = 'Idle. Ready to start.'
+    application.bot_data['crawling'] = False
 
     # --- Register handlers ---
     logger.info("Registering command and error handlers...")
     owner_filter = filters.User(user_id=BOT_OWNER)
 
-    telegram_app.add_handler(CommandHandler("start", start_command, filters=owner_filter))
-    telegram_app.add_handler(CommandHandler("status", status_command, filters=owner_filter))
-    telegram_app.add_handler(CommandHandler("stop", stop_command, filters=owner_filter))
+    application.add_handler(CommandHandler("start", start_command, filters=owner_filter))
+    application.add_handler(CommandHandler("status", status_command, filters=owner_filter))
+    application.add_handler(CommandHandler("stop", stop_command, filters=owner_filter))
 
-    telegram_app.add_handler(MessageHandler(filters.COMMAND & ~owner_filter, unauthorized_user_handler))
+    application.add_handler(MessageHandler(filters.COMMAND & ~owner_filter, unauthorized_user_handler))
 
-    telegram_app.add_error_handler(error_handler)
+    application.add_error_handler(error_handler)
     logger.info("Command and error handlers registered.")
+    
+    return application
 
-    if APP_URL:
-        ping_thread = Thread(target=self_ping, name="SelfPingThread", daemon=True)
-        ping_thread.start()
-        logger.info("Self-pinging keep-alive service started.")
-    else:
-        logger.info("Self-pinging disabled as APP_URL is not set.")
-
-    logger.info("Starting bot polling thread...")
-    bot_thread = Thread(target=run_bot_polling, args=(telegram_app,), name="TelegramPollingThread", daemon=True)
-    bot_thread.start()
-    logger.info("Bot polling thread started. Gunicorn worker initialization complete.")
-
-if __name__ != "__main__":
-    initialize_app()
+# No code is run here when imported
