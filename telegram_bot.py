@@ -6,7 +6,9 @@ import asyncio
 from threading import Thread, current_thread # Import current_thread
 from flask import Flask
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+# <<< MODIFIED IMPORTS >>>
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+# <<< END MODIFIED IMPORTS >>>
 import shutil # Import shutil for directory removal
 import re # Import re
 from datetime import datetime # Import datetime
@@ -577,11 +579,13 @@ logger.info("Telegram Application built.")
 telegram_app.bot_data['status'] = 'Idle. Ready to start.'
 telegram_app.bot_data['crawling'] = False
 
-# Register command handlers
+# --- Register command handlers using MessageHandler ---
 logger.info("Registering command handlers...")
-telegram_app.add_handler(CommandHandler("start", start_command))
-telegram_app.add_handler(CommandHandler("status", status_command))
-telegram_app.add_handler(CommandHandler("stop", stop_command))
+# <<< USING MessageHandler with filters >>>
+telegram_app.add_handler(MessageHandler(filters.COMMAND & filters.Regex(r'^/start(?:@\w+)?$'), start_command))
+telegram_app.add_handler(MessageHandler(filters.COMMAND & filters.Regex(r'^/status(?:@\w+)?$'), status_command))
+telegram_app.add_handler(MessageHandler(filters.COMMAND & filters.Regex(r'^/stop(?:@\w+)?$'), stop_command))
+# --- End change ---
 logger.info("Command handlers registered.")
 
 
@@ -604,7 +608,5 @@ bot_thread.start()
 logger.info("Bot polling thread started. Gunicorn worker initialized and serving Flask app.")
 
 # Gunicorn manages the main process life cycle and serves `server_app`.
-# The bot polling and pinging run in background daemon threads.
-# No `if __name__ == "__main__":` block or infinite loop needed here._app`.
 # The bot polling and pinging run in background daemon threads.
 # No `if __name__ == "__main__":` block or infinite loop needed here.
