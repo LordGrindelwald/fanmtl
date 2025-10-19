@@ -4,7 +4,7 @@ ascii==1.0.0
 regex==2023.10.3
 packaging==23.2
 lxml==5.1.0
-pyease-grpc>=1.6.0
+pyease-grpc==1.6.0 # <-- Changed this line
 python-dotenv==1.0.0
 beautifulsoup4==4.12.2
 requests==2.31.0
@@ -23,7 +23,7 @@ html5lib==1.1
 base58==2.1.1
 python-box==7.1.1
 pycryptodome==3.19.0
-selenium==4.9.0 # <-- Changed this line
+selenium==4.9.0
 tenacity>=8.2.3
 ecdsa>=0.14
 
