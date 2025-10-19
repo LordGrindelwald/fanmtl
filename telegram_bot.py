@@ -44,7 +44,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 server_app = Flask(__name__)
 
-# REMOVED global telegram_app variable
 BOT_OWNER = None
 
 # --- Database Connection ---
@@ -118,30 +117,29 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 # --- Core Bot Logic ---
-def crawl_and_send_sync(context: ContextTypes.DEFAULT_TYPE):
-    """Synchronous wrapper to run the async crawl in a new thread."""
+def crawl_and_send_sync(context: ContextTypes.DEFAULT_TYPE, loop: asyncio.AbstractEventLoop):
+    """
+    Synchronous wrapper to run the async crawl in a new thread.
+    The event loop is passed from the command handler.
+    """
     if not context.application:
         logger.error("Telegram application not found in context.")
         return
 
     try:
-        # Get the running event loop from the application object
-        loop = context.application.loop
+        # Use the loop passed from start_command
         if not (loop and loop.is_running()):
-             raise RuntimeError("context.application.loop not found or is not running.")
-        logger.info(f"Using event loop from context.application.loop: {loop} for crawl task.")
+             raise RuntimeError("Event loop passed from start_command is not valid or not running.")
+        logger.info(f"Using event loop passed from start_command: {loop} for crawl task.")
 
     except Exception as e:
         logger.error(f"Could not retrieve a running event loop: {e}", exc_info=True)
         if BOT_OWNER:
              try:
-                 # We need a loop to send this error.
-                 # We're in a bad state, so try to get *any* running loop
-                 # This is a best-effort attempt.
-                 error_loop = asyncio.get_running_loop()
+                 # We should have a valid loop to report this error
                  asyncio.run_coroutine_threadsafe(
-                     context.bot.send_message(BOT_OWNER, f"Error starting crawl: Could not get event loop. {e}"),
-                     error_loop
+                     context.bot.send_message(BOT_OWNER, f"Error starting crawl: Invalid event loop. {e}"),
+                     loop
                  ).result(timeout=10)
              except Exception as report_e:
                  logger.error(f"Failed to report loop error to user (this is bad): {report_e}")
@@ -406,10 +404,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("A crawl is already in progress. Use /status to check.")
     else:
         await update.message.reply_text("Crawl started. I will process all novels. Use /status to check my progress.")
-        # We run the synchronous function in a new thread.
-        # It gets all the info it needs from the 'context' object.
-        thread = Thread(target=crawl_and_send_sync, args=(context,), name="CrawlThread", daemon=True)
+        
+        # --- FIX ---
+        # Get the event loop *here* while we are in the main async thread
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError as e:
+            logger.error(f"Could not get running loop in start_command: {e}", exc_info=True)
+            await update.message.reply_text(f"Error: Could not get event loop to start crawl: {e}")
+            return
+        
+        # Pass both the context and the loop to the sync wrapper in the new thread
+        thread = Thread(target=crawl_and_send_sync, args=(context, loop), name="CrawlThread", daemon=True)
         thread.start()
+        # --- END FIX ---
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /status command."""
@@ -439,8 +447,6 @@ async def unauthorized_user_handler(update: Update, context: ContextTypes.DEFAUL
 
 
 # --- Initialization and Startup ---
-# REMOVED run_bot_polling function. It's not needed.
-
 def initialize_app() -> Application:
     global BOT_OWNER, APP_URL
 
