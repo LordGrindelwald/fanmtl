@@ -1,116 +1,133 @@
-import json
-import locale
+# -*- coding: utf-8 -*-
 import logging
 import os
 from typing import Optional
 
-from selenium.webdriver import ChromeOptions
-from selenium.webdriver import Remote as WebDriver
-from selenium.webdriver.remote.remote_connection import LOGGER
+from selenium.webdriver.remote.remote_connection import RemoteConnection
+# Import ClientConfig to properly initialize the parent
+from selenium.webdriver.remote.client_config import ClientConfig
 
-from ..core.exeptions import LNException
-from ..core.soup import SoupMaker
-from .elements import WebElement, _add_virtual_authenticator
-from .job_queue import _acquire_queue, _release_queue
-from .scripts import _override_get
+from .job_queue import JobQueue
+from .scripts import SCRIPTS
 
 logger = logging.getLogger(__name__)
 
 
-def create_remote(
-    address: str = "http://localhost:4444",
-    options: Optional["ChromeOptions"] = None,
-    timeout: Optional[float] = None,
-    soup_maker: Optional[SoupMaker] = None,
-    **kwargs,
-) -> WebDriver:
-    """
-    Acquire a webdriver instane. There is a limit of how many webdriver
-    instances you can keep open at a time. You must call quit() to cleanup
-    existing one to obtain new ones.
+class ChromiumRemoteConnection(RemoteConnection):
+    """Executes commands remotely using grpc"""
 
-    NOTE: You must call quit() to cleanup the queue.
-    """
-    _acquire_queue(timeout)
-    is_debug = os.getenv("debug_mode")
+    def __init__(
+        self,
+        remote_server_addr, # This is the gRPC address for JobQueue
+        browser_name,
+        browser_version,
+        keep_alive=True,
+        ignore_proxy=False,
+    ):
+        # *** FIX: Initialize the parent RemoteConnection ***
+        # Create a basic ClientConfig. The remote_server_addr here is for the standard
+        # WebDriver HTTP endpoint, which ChromiumRemoteConnection doesn't use for commands.
+        # Passing None might rely on SeleniumManager, or we can pass a dummy value.
+        # Let's use a dummy placeholder, as Selenium might check it exists.
+        # keep_alive is relevant for the underlying urllib3 pool managed by the parent,
+        # even if we don't use its _request method directly.
+        config = ClientConfig(remote_server_addr="http://127.0.0.1:4444", # Dummy WebDriver URL
+                              keep_alive=keep_alive)
 
-    if not options:
-        options = ChromeOptions()
+        # Call the parent class's __init__ method
+        super().__init__(client_config=config)
+        # *** END FIX ***
 
-    # Configure window behavior
-    options.add_argument("--start-maximized")
+        # Initialize ChromiumRemoteConnection specific attributes AFTER parent init
+        self.job_queue = JobQueue(remote_server_addr) # Use the actual gRPC address here
+        self._browser_name = browser_name
+        self._browser_version = browser_version
+        self.ignore_proxy = ignore_proxy # Used in capabilities property
 
-    # Logging configs
-    LOGGER.setLevel(logging.WARN)
-    options.add_argument(f"--log-level={0 if is_debug else 3}")
-    if not is_debug:
-        LOGGER.setLevel(1000)
+    def execute(self, command, params):
+        """Executes a command against the remote server via JobQueue (overrides parent)"""
+        if not self.job_queue:
+            raise RuntimeError("ChromiumRemoteConnection has been quit.")
+        return self.job_queue.execute(command, params)
 
-    # Suppress bothersome stuffs
-    options.add_argument("--no-default-browser-check")
-    options.add_argument("--disable-infobars")
-    options.add_argument("--no-first-run")
-    options.add_argument("--ignore-certificate-errors")
-    options.add_argument("--disable-client-side-phishing-detection")
-    options.add_argument("--disable-blink-features=AutomationControlled")
+    @property
+    def browser_name(self):
+        return self._browser_name
 
-    # Add capabilities
-    options.set_capability("acceptInsecureCerts", True)
-    # options.set_capability("quietExceptions", True)
+    @property
+    def browser_version(self):
+        return self._browser_version
 
-    # Chrome specific experimental options
-    options.accept_insecure_certs = True
-    options.unhandled_prompt_behavior = "dismiss"
-    options.strict_file_interactability = False
-    options.add_experimental_option("useAutomationExtension", False)
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    # if not is_debug:
-    #     options.add_experimental_option("excludeSwitches", ["enable-logging"])
+    @property
+    def w3c(self):
+        return True
 
-    # Set default language
-    try:
-        language = locale.getdefaultlocale()[0].replace("_", "-")
-    except Exception:
+    def get_capability(self, key):
+        """Returns the capability"""
+        return self.capabilities.get(key)
+
+    def quit(self):
+        """Closes the browser and shuts down the ChromiumDriver executable"""
+        if self.job_queue:
+            try:
+                # Attempt to gracefully shut down the browser via WebDriver command if possible,
+                # BEFORE stopping the gRPC client. This might not work if connection is already broken.
+                # super().execute(Command.QUIT, {"sessionId": self._session_id}) # Requires session_id, which isn't stored here
+                pass # The original didn't seem to quit the browser via Selenium command
+            except Exception as e:
+                logger.warning(f"Exception during potential browser quit command: {e}")
+            finally:
+                try:
+                    self.job_queue.stop_client()
+                except Exception as e:
+                    logger.error(f"Error stopping job queue client: {e}")
+                finally:
+                    self.job_queue = None
+        # Call parent close potentially, though it might be no-op if keep_alive was false
+        # super().close() # Seems unnecessary as we manage the connection via job_queue
+
+    def close(self):
+        """No-op, consistent with parent if keep_alive is true."""
         pass
-    options.add_argument("--lang=%s" % (language or "en-US"))
 
-    # Configure user data dir
-    user_data_dir = "/home/seluser"
-    if user_data_dir and os.access(user_data_dir, mode=os.F_OK):
-        options.add_argument(f"--user-data-dir={user_data_dir}")
-    try:
-        prefs_path = os.path.join(user_data_dir, "Default", "Preferences")
-        with open(prefs_path, encoding="latin1", mode="r+") as fp:
-            cfg = json.load(fp)
-            cfg["profile"]["exit_type"] = None
-            fp.seek(0, 0)
-            json.dump(cfg, fp)
-            logger.debug("Cleared exit_type flag")
-    except Exception as e:
-        logger.debug("Could not clear any bad exit_type flag | %s", e)
+    @property
+    def capabilities(self):
+        """Define capabilities directly, independent of parent's config."""
+        caps = {
+            "browserName": self.browser_name,
+            "browserVersion": self.browser_version,
+            "platformName": "any",
+            "pageLoadStrategy": "normal",
+            "acceptInsecureCerts": True,
+            "timeouts": {"implicit": 0, "pageLoad": 300000, "script": 30000},
+            "setWindowRect": True,
+            "strictFileInteractability": False,
+            "proxy": {},
+            "unhandledPromptBehavior": "dismiss and notify",
+            "webauthn:virtualAuthenticators": True,
+        }
+        # Apply proxy setting based on ignore_proxy flag
+        if self.ignore_proxy:
+            caps["proxy"] = {"proxyType": "direct"}
+        elif self.client_config and self.client_config.proxy: # Check if config exists and has proxy
+             # If not ignoring proxy, potentially use proxy from ClientConfig if set there
+             # This part might need refinement depending on how proxy is intended to be configured
+             pass # Currently, default is no proxy unless ignore_proxy sets it to direct.
+        return caps
 
-    try:
-        logger.debug("Creating remote instance | " + f"address={address}")
-        chrome = WebDriver(
-            command_executor=address,
-            options=options,
-        )
-    except Exception as e:
-        logger.exception("Failed to create remote instance", e)
-        chrome = None
+    def script_to_execute(self, script) -> Optional[str]:
+        """Helper method to determine which script to execute"""
+        # This method doesn't depend on parent state
+        if script == "executeScript":
+            return SCRIPTS["executeScript"]
+        elif script == "executeAsyncScript":
+            return SCRIPTS["executeAsyncScript"]
+        return None
 
-    if not chrome:
-        raise LNException("Could not obtain a webdriver")
-
-    logger.info("Created remote instance > %s", chrome.session_id)
-
-    if not soup_maker:
-        soup_maker = SoupMaker()
-    chrome._soup_maker = soup_maker
-    chrome._web_element_cls = WebElement
-
-    _add_virtual_authenticator(chrome)
-    _override_get(chrome)
-    _release_queue(chrome)
-
-    return chrome
+    def upload(self, filename):
+        """Uploads a file to the remote server via JobQueue (overrides parent)"""
+        if not self.job_queue:
+            raise RuntimeError("ChromiumRemoteConnection has been quit.")
+        with open(filename, "rb") as fp:
+            content = fp.read()
+        return self.job_queue.upload_file(content)
