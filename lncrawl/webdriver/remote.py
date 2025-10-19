@@ -4,8 +4,9 @@ import os
 from typing import Optional
 
 from selenium.webdriver.remote.remote_connection import RemoteConnection
+from selenium.webdriver.remote.client_config import ClientConfig
 
-from .job_queue import JobQueue
+# from .job_queue import JobQueue  <-- REMOVE THIS LINE
 from .scripts import SCRIPTS
 
 logger = logging.getLogger(__name__)
@@ -22,21 +23,25 @@ class ChromiumRemoteConnection(RemoteConnection):
         keep_alive=True,
         ignore_proxy=False,
     ):
-        # *** THE ACTUAL FIX ***
-        # The parent class is not initialized, so we manually add the
-        # attribute that Selenium's RemoteWebDriver is expecting.
-        # We set it to None, as it's not used by this custom connection class.
-        self._client_config = None
-        # *** END FIX ***
+        # *** FIX for circular import ***
+        from .job_queue import JobQueue # <-- ADD THIS LINE HERE
+        
+        # FIX for _client_config error
+        config = ClientConfig(remote_server_addr="http://127.0.0.1:4444", keep_alive=keep_alive)
+        super().__init__(client_config=config)
 
+        # lncrawl's custom logic
         self.job_queue = JobQueue(remote_server_addr)
         self._browser_name = browser_name
         self._browser_version = browser_version
-        self.keep_alive = keep_alive
         self.ignore_proxy = ignore_proxy
 
+    # ... (the rest of the file remains the same) ...
+
     def execute(self, command, params):
-        """Executes a command against the remote server"""
+        """Executes a command against the remote server via JobQueue"""
+        if not self.job_queue:
+            raise RuntimeError("ChromiumRemoteConnection has been quit.")
         return self.job_queue.execute(command, params)
 
     @property
@@ -58,8 +63,12 @@ class ChromiumRemoteConnection(RemoteConnection):
     def quit(self):
         """Closes the browser and shuts down the ChromiumDriver executable"""
         if self.job_queue:
-            self.job_queue.stop_client()
-        self.job_queue = None
+            try:
+                self.job_queue.stop_client()
+            except Exception as e:
+                logger.error(f"Error stopping job queue client: {e}")
+            finally:
+                self.job_queue = None
 
     def close(self):
         """No-op"""
@@ -94,7 +103,8 @@ class ChromiumRemoteConnection(RemoteConnection):
 
     def upload(self, filename):
         """Uploads a file to the remote server"""
-        fp = open(filename, "rb")
-        content = fp.read()
-        fp.close()
+        if not self.job_queue:
+            raise RuntimeError("ChromiumRemoteConnection has been quit.")
+        with open(filename, "rb") as fp:
+            content = fp.read()
         return self.job_queue.upload_file(content)
