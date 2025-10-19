@@ -56,7 +56,9 @@ RUN apt-get update && \
     wget \
     xdg-utils && \
     # --- CLEANUP ---
+    # Remove build tools after installation
     apt-get purge -y --auto-remove build-essential && \
+    # Clean apt cache
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -78,9 +80,10 @@ COPY . .
 
 # FIX: Move 'sources' inside 'lncrawl' and create __init__.py files
 # Ensure this directory structure matches your project layout
+# CORRECTED SYNTAX: Escaped semicolon for find -exec
 RUN if [ -d /app/sources ] && [ -d /app/lncrawl ]; then \
         mv /app/sources /app/lncrawl/sources && \
-        find /app/lncrawl/sources -type d -exec touch {}/__init__.py \; \
+        find /app/lncrawl/sources -type d -exec touch {}/__init__.py \; ; \
     else \
         echo "Warning: /app/sources or /app/lncrawl directory not found, skipping move/touch operations." >&2; \
     fi
