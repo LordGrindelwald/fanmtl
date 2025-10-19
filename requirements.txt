@@ -4,7 +4,7 @@ ascii==1.0.0
 regex==2023.10.3
 packaging==23.2
 lxml==5.1.0
-# pyease-grpc==1.6.0 # REMOVED
+# pyease-grpc>=1.6.0 # REMOVED
 grpcio==1.49.1
 grpcio-tools==1.49.1
 python-dotenv==1.0.0
@@ -17,7 +17,7 @@ colorama==0.4.6
 tqdm==4.66.1
 PyExecJS==1.5.1
 ebooklib==0.18
-pillow==10.1.0 # <-- CORRECTED VERSION
+pillow==10.1.0 # <-- THIS IS THE CORRECT VERSION
 readability-lxml==0.8.1
 questionary==2.0.1
 prompt-toolkit==3.0.36
